@@ -158,6 +158,7 @@ export async function autoClassifyMasks(
     // (glass is slightly recessed or has different reflectivity).
     // If the mask is mid-image and its depth differs meaningfully from
     // the image average depth → likely a window opening.
+    const inBuildingZone = cy >= 0.35 && cy <= 0.65;
     if (hasDepth && inBuildingZone && relSize > 0.003 && relSize < 0.12) {
       const maskDepth = sampleAvgDepth(mData, mW, mH, depthData!, dW, dH);
       // Sample the depth of surrounding context (entire image average)
@@ -178,7 +179,6 @@ export async function autoClassifyMasks(
     // ── 8. Uniformity + mid-zone heuristic ───────────────────────────────────
     // Only classify as wall when mask centre is solidly in the building zone
     // (35–65 % vertically) AND color is consistent (not grass, sky already vetoed above)
-    const inBuildingZone = cy >= 0.35 && cy <= 0.65;
     const solidRegion = relSize > 0.01 && bh > 0.08;
 
     if (inBuildingZone && solidRegion && uniformity > 0.5) {
