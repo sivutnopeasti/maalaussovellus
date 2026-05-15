@@ -37,6 +37,10 @@ export interface AnalysisSession {
   reference: ReferenceData;
   masks: MaskResult[];
   depthMapUrl: string;
+  /** Canny edge map — used for perspective angle analysis */
+  cannyMapUrl: string | null;
+  /** MLSD line map — used for dominant line angle / foreshortening correction */
+  mlsdMapUrl: string | null;
   /** SAM 3 text-detected wall regions (normalized bboxes) */
   wallHints: BBoxHint[];
   /** SAM 3 text-detected opening regions (normalized bboxes) */

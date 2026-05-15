@@ -1,7 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
-import { configureFal, runDepthEstimation } from "@/lib/fal";
+import {
+  configureFal,
+  runDepthEstimation,
+  runCannyEdgeDetection,
+  runMlsdLineDetection,
+} from "@/lib/fal";
 
-export const maxDuration = 60;
+export const maxDuration = 120;
 
 export async function POST(req: NextRequest) {
   try {
@@ -15,17 +20,22 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const result = await runDepthEstimation(imageUrl);
+    // Run depth, Canny and MLSD in parallel for comprehensive analysis
+    const [depthResult, cannyResult, mlsdResult] = await Promise.all([
+      runDepthEstimation(imageUrl),
+      runCannyEdgeDetection(imageUrl).catch(() => null),
+      runMlsdLineDetection(imageUrl).catch(() => null),
+    ]);
 
     return NextResponse.json({
-      depthMapUrl: result.image.url,
-      width: result.image.width ?? 0,
-      height: result.image.height ?? 0,
+      depthMapUrl: depthResult.image.url,
+      cannyMapUrl: cannyResult?.image.url ?? null,
+      mlsdMapUrl: mlsdResult?.image.url ?? null,
     });
   } catch (err) {
     console.error("[/api/depth]", err);
     return NextResponse.json(
-      { error: "Depth estimation failed", detail: String(err) },
+      { error: "Analysis failed", detail: String(err) },
       { status: 500 },
     );
   }

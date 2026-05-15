@@ -104,10 +104,36 @@ export async function runDepthEstimation(
 ): Promise<DepthAnythingOutput> {
   const result = await fal.subscribe(
     "fal-ai/image-preprocessors/depth-anything/v2",
-    {
-      input: { image_url: imageUrl },
-    },
+    { input: { image_url: imageUrl } },
   );
+  return result.data as DepthAnythingOutput;
+}
+
+/** Run Canny edge detection — returns edge map image. */
+export async function runCannyEdgeDetection(
+  imageUrl: string,
+): Promise<DepthAnythingOutput> {
+  const result = await fal.subscribe("fal-ai/image-preprocessors/canny", {
+    input: {
+      image_url: imageUrl,
+      low_threshold: 50,
+      high_threshold: 150,
+    },
+  });
+  return result.data as DepthAnythingOutput;
+}
+
+/** Run MLSD line-segment detection — returns image with detected lines. */
+export async function runMlsdLineDetection(
+  imageUrl: string,
+): Promise<DepthAnythingOutput> {
+  const result = await fal.subscribe("fal-ai/image-preprocessors/mlsd", {
+    input: {
+      image_url: imageUrl,
+      score_threshold: 0.1,
+      distance_threshold: 0.1,
+    },
+  });
   return result.data as DepthAnythingOutput;
 }
 

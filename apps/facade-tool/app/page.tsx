@@ -78,7 +78,12 @@ export default function HomePage() {
         openingHints: BBoxHint[];
         ignoreHints: BBoxHint[];
       } = await segRes.json();
-      const { depthMapUrl }: { depthMapUrl: string } = await depthRes.json();
+      const {
+        depthMapUrl,
+        cannyMapUrl,
+        mlsdMapUrl,
+      }: { depthMapUrl: string; cannyMapUrl: string | null; mlsdMapUrl: string | null } =
+        await depthRes.json();
 
       const session: AnalysisSession = {
         uploadedImageUrl,
@@ -87,6 +92,8 @@ export default function HomePage() {
         reference,
         masks: segData.masks,
         depthMapUrl,
+        cannyMapUrl,
+        mlsdMapUrl,
         wallHints: segData.wallHints ?? [],
         openingHints: segData.openingHints ?? [],
         ignoreHints: segData.ignoreHints ?? [],

@@ -18,16 +18,11 @@ import ColorPicker from "@/components/ColorPicker";
 import QuoteForm from "@/components/QuoteForm";
 import {
   enrichMasksWithPixelCounts,
-  calculateWallArea,
-  depthCorrectedArea,
+  calculatePreciseMeasurement,
+  type PreciseMeasurementResult,
 } from "@/lib/measure";
 import { autoClassifyMasks } from "@/lib/autoClassify";
-import type {
-  AnalysisSession,
-  MaskResult,
-  PaintColor,
-  MeasurementResult,
-} from "@/lib/types";
+import type { AnalysisSession, MaskResult, PaintColor } from "@/lib/types";
 
 type Panel = "segment" | "measure" | "color" | "quote";
 
@@ -36,7 +31,8 @@ export default function ResultPage() {
   const [session, setSession] = useState<AnalysisSession | null>(null);
   const [masks, setMasks] = useState<MaskResult[]>([]);
   const [isAutoClassifying, setIsAutoClassifying] = useState(false);
-  const [measurement, setMeasurement] = useState<MeasurementResult | null>(null);
+  const [measurement, setMeasurement] = useState<PreciseMeasurementResult | null>(null);
+  const [showAnalysisMaps, setShowAnalysisMaps] = useState(false);
   const [selectedColor, setSelectedColor] = useState<PaintColor | null>(null);
   const [customHex, setCustomHex] = useState<string>("#FFFFFF");
   const [visualizedUrl, setVisualizedUrl] = useState<string | null>(null);
@@ -83,30 +79,16 @@ export default function ResultPage() {
     setIsMeasuring(true);
     setError(null);
     try {
-      // Enrich masks with pixel counts (browser-side canvas)
       const enriched = await enrichMasksWithPixelCounts(masks);
       setMasks(enriched);
 
-      const rawResult = calculateWallArea(enriched, session.reference);
-
-      // Try depth correction; fall back to raw if it fails
-      let finalM2 = rawResult.wallAreaM2;
-      const wallMasks = enriched.filter((m) => m.category === "wall");
-      if (wallMasks.length > 0 && session.depthMapUrl) {
-        try {
-          // Use the first wall mask URL for depth sampling
-          finalM2 = await depthCorrectedArea(
-            rawResult.wallAreaM2,
-            session.depthMapUrl,
-            session.reference,
-            wallMasks[0].url,
-          );
-        } catch {
-          // Depth correction is optional; ignore errors
-        }
-      }
-
-      setMeasurement({ ...rawResult, wallAreaM2: finalM2 });
+      const result = await calculatePreciseMeasurement(
+        enriched,
+        session.reference,
+        session.depthMapUrl,
+        session.mlsdMapUrl ?? null,
+      );
+      setMeasurement(result);
       setOpenPanel("color");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Laskenta epäonnistui.");
@@ -320,8 +302,14 @@ export default function ResultPage() {
                 title="2. Laske neliömetrit"
                 subtitle={
                   measurement
-                    ? `${measurement.wallAreaM2.toFixed(1)} m² (netto)`
-                    : "Perspektiivikorjattu laskenta"
+                    ? `${measurement.wallAreaM2.toFixed(1)} m² — ${
+                        measurement.method === "depth+perspective"
+                          ? "syvyys + perspektiivikorjaus"
+                          : measurement.method === "depth"
+                            ? "syvyyskorjattu"
+                            : "peruslaskenta"
+                      }`
+                    : "Syvyys + MLSD perspektiivikorjaus"
                 }
                 isOpen={openPanel === "measure"}
                 isDone={!!measurement}
@@ -330,35 +318,115 @@ export default function ResultPage() {
                 }
               >
                 <div className="space-y-3">
+                  {/* Reference info */}
                   <div className="p-3 bg-slate-50 rounded-xl text-xs text-slate-600 space-y-1">
                     <p>
                       <strong>Referenssi:</strong> {session.reference.meters} m
                       = {session.reference.pixelDistance.toFixed(0)} px (
                       {session.reference.pixelsPerMeter.toFixed(1)} px/m)
                     </p>
-                    <p>
-                      Syvyyskartta syvyyden perspektiivikorjaukseen
-                      saatavilla.
-                    </p>
+                    <div className="flex gap-2 mt-1 flex-wrap">
+                      <span className={`px-1.5 py-0.5 rounded text-xs font-medium ${
+                        session.depthMapUrl ? "bg-blue-100 text-blue-700" : "bg-slate-200 text-slate-500"
+                      }`}>
+                        Syvyyskartta {session.depthMapUrl ? "✓" : "✗"}
+                      </span>
+                      <span className={`px-1.5 py-0.5 rounded text-xs font-medium ${
+                        session.mlsdMapUrl ? "bg-indigo-100 text-indigo-700" : "bg-slate-200 text-slate-500"
+                      }`}>
+                        MLSD-viivat {session.mlsdMapUrl ? "✓" : "✗"}
+                      </span>
+                      <span className={`px-1.5 py-0.5 rounded text-xs font-medium ${
+                        session.cannyMapUrl ? "bg-violet-100 text-violet-700" : "bg-slate-200 text-slate-500"
+                      }`}>
+                        Canny-reunat {session.cannyMapUrl ? "✓" : "✗"}
+                      </span>
+                    </div>
                   </div>
 
+                  {/* Analysis maps toggle */}
+                  {(session.depthMapUrl || session.mlsdMapUrl || session.cannyMapUrl) && (
+                    <button
+                      onClick={() => setShowAnalysisMaps((v) => !v)}
+                      className="w-full text-xs text-slate-500 hover:text-slate-700 flex items-center justify-center gap-1 py-1"
+                    >
+                      {showAnalysisMaps ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
+                      {showAnalysisMaps ? "Piilota" : "Näytä"} analyysikartat
+                    </button>
+                  )}
+
+                  {showAnalysisMaps && (
+                    <div className="grid grid-cols-3 gap-1.5">
+                      {session.depthMapUrl && (
+                        <div className="space-y-0.5">
+                          <p className="text-xs text-center text-slate-500">Syvyys</p>
+                          {/* eslint-disable-next-line @next/next/no-img-element */}
+                          <img
+                            src={session.depthMapUrl}
+                            alt="Syvyyskartta"
+                            className="w-full rounded-lg border border-slate-200"
+                          />
+                        </div>
+                      )}
+                      {session.mlsdMapUrl && (
+                        <div className="space-y-0.5">
+                          <p className="text-xs text-center text-slate-500">MLSD-viivat</p>
+                          {/* eslint-disable-next-line @next/next/no-img-element */}
+                          <img
+                            src={session.mlsdMapUrl}
+                            alt="MLSD-viivakartta"
+                            className="w-full rounded-lg border border-slate-200"
+                          />
+                        </div>
+                      )}
+                      {session.cannyMapUrl && (
+                        <div className="space-y-0.5">
+                          <p className="text-xs text-center text-slate-500">Canny-reunat</p>
+                          {/* eslint-disable-next-line @next/next/no-img-element */}
+                          <img
+                            src={session.cannyMapUrl}
+                            alt="Canny-reunakartta"
+                            className="w-full rounded-lg border border-slate-200"
+                          />
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Result */}
                   {measurement && (
                     <div className="p-3 bg-green-50 border border-green-200 rounded-xl space-y-1 text-sm">
                       <div className="flex justify-between text-green-700">
-                        <span>Seinäpikselit</span>
-                        <span>
-                          {(measurement.wallPixels / 1000).toFixed(0)} kpx
-                        </span>
+                        <span>Seinäalueet</span>
+                        <span>{(measurement.wallPixels / 1000).toFixed(0)} kpx</span>
                       </div>
                       <div className="flex justify-between text-red-600">
                         <span>Aukot (vähennetty)</span>
-                        <span>
-                          −{(measurement.openingPixels / 1000).toFixed(0)} kpx
-                        </span>
+                        <span>−{(measurement.openingPixels / 1000).toFixed(0)} kpx</span>
                       </div>
                       <div className="flex justify-between font-bold text-green-800 border-t border-green-200 pt-1">
                         <span>Nettoseinäala</span>
                         <span>{measurement.wallAreaM2.toFixed(2)} m²</span>
+                      </div>
+                      <div className="border-t border-green-200 pt-1 space-y-0.5 text-xs text-slate-500">
+                        <div className="flex justify-between">
+                          <span>Syvyyskorjaus</span>
+                          <span>{measurement.depthCorrectionFactor.toFixed(3)}×</span>
+                        </div>
+                        {measurement.perspectiveCorrectionFactor !== 1 && (
+                          <div className="flex justify-between">
+                            <span>Perspektiivikorjaus</span>
+                            <span>{measurement.perspectiveCorrectionFactor.toFixed(3)}×
+                              {measurement.dominantLineAngleDeg !== null && (
+                                <span className="text-slate-400"> ({measurement.dominantLineAngleDeg.toFixed(1)}°)</span>
+                              )}
+                            </span>
+                          </div>
+                        )}
+                        <div className="flex justify-between font-medium text-slate-600">
+                          <span>Menetelmä</span>
+                          <span>{measurement.method}</span>
+                        </div>
                       </div>
                     </div>
                   )}
@@ -373,7 +441,7 @@ export default function ResultPage() {
                     ) : (
                       <Calculator className="w-4 h-4" />
                     )}
-                    {isMeasuring ? "Lasketaan..." : "Laske neliömetrit"}
+                    {isMeasuring ? "Lasketaan (syvyys + viivat)..." : "Laske neliömetrit"}
                   </button>
                 </div>
               </AccordionPanel>
