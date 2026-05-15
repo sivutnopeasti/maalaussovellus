@@ -52,39 +52,49 @@ export default function SegmentationOverlay({
     setIsRendering(true);
 
     try {
-      // 1. Load original image
+      // 1. Load original image and set canvas size
       const origImg = await loadImg(originalImageUrl);
       canvas.width = origImg.width;
       canvas.height = origImg.height;
       const ctx = canvas.getContext("2d")!;
+
+      // 2. Draw original image as base layer
       ctx.drawImage(origImg, 0, 0);
 
-      // 2. For each non-ignored mask, composite a colored overlay
+      // 3. For each non-ignored mask, build a colored RGBA overlay and draw it
       const visible = masks.filter((m) => m.category !== "ignored");
       for (const mask of visible) {
-        const rgba = OVERLAY_RGBA[mask.category];
+        const [r, g, b, a] = OVERLAY_RGBA[mask.category];
         try {
           const maskImg = await loadImg(mask.url);
-          const offscreen = document.createElement("canvas");
-          offscreen.width = origImg.width;
-          offscreen.height = origImg.height;
-          const octx = offscreen.getContext("2d")!;
 
-          // Scale mask to original image dimensions
+          // Offscreen canvas: convert grayscale mask → colored RGBA layer
+          const off = document.createElement("canvas");
+          off.width = origImg.width;
+          off.height = origImg.height;
+          const octx = off.getContext("2d")!;
+
+          // Scale mask to match original image dimensions
           octx.drawImage(maskImg, 0, 0, origImg.width, origImg.height);
-          const { data } = octx.getImageData(0, 0, origImg.width, origImg.height);
+          const imgData = octx.getImageData(0, 0, origImg.width, origImg.height);
+          const d = imgData.data;
 
-          // Build color layer: only paint where mask is bright
-          const colorLayer = ctx.createImageData(origImg.width, origImg.height);
-          for (let i = 0; i < data.length; i += 4) {
-            if (data[i] > 127) {
-              colorLayer.data[i]     = rgba[0];
-              colorLayer.data[i + 1] = rgba[1];
-              colorLayer.data[i + 2] = rgba[2];
-              colorLayer.data[i + 3] = rgba[3];
+          // For each masked pixel (R > 127): replace with color + alpha
+          // For non-masked pixels: set alpha = 0 (fully transparent → original shows through)
+          for (let i = 0; i < d.length; i += 4) {
+            if (d[i] > 127) {
+              d[i]     = r;
+              d[i + 1] = g;
+              d[i + 2] = b;
+              d[i + 3] = a;
+            } else {
+              d[i + 3] = 0; // fully transparent
             }
           }
-          ctx.putImageData(colorLayer, 0, 0);
+          octx.putImageData(imgData, 0, 0);
+
+          // Composite the colored layer over the original image
+          ctx.drawImage(off, 0, 0);
         } catch {
           // Skip masks that fail to load
         }
