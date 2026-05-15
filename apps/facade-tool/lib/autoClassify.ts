@@ -69,6 +69,11 @@ export async function autoClassifyMasks(
   const hasIgnoreHints = ignoreHints.length > 0;
 
   return masks.map((mask, i): MaskResult => {
+    // SAM 3 opening masks (index >= 10000) are pre-classified — preserve them.
+    if (mask.index >= 10000 && mask.category === "opening") {
+      return { ...mask, pixelCount: undefined };
+    }
+
     const mc = maskCanvases[i];
     if (!mc) return { ...mask, category: "ignored" };
 
@@ -146,6 +151,22 @@ export async function autoClassifyMasks(
     // Small dark region in middle of image → window/door opening
     if (hasColor && avgBrightness < 90 && relSize < 0.06 && relSize > 0.003) {
       return categorise("opening");
+    }
+
+    // ── 6b. Depth-based window detection ──────────────────────────────────────
+    // Windows appear at a slightly different depth than the surrounding wall
+    // (glass is slightly recessed or has different reflectivity).
+    // If the mask is mid-image and its depth differs meaningfully from
+    // the image average depth → likely a window opening.
+    if (hasDepth && inBuildingZone && relSize > 0.003 && relSize < 0.12) {
+      const maskDepth = sampleAvgDepth(mData, mW, mH, depthData!, dW, dH);
+      // Sample the depth of surrounding context (entire image average)
+      const contextDepth = depthData![Math.floor(dH / 2) * dW * 4]; // rough mid-image sample
+      const depthDiff = Math.abs(maskDepth - contextDepth);
+      // If mask depth is significantly darker (farther) than context → recessed opening
+      if (depthDiff > 25 && maskDepth < contextDepth - 20) {
+        return categorise("opening");
+      }
     }
 
     // ── 7. SAM 3 WALL signal ──────────────────────────────────────────────────

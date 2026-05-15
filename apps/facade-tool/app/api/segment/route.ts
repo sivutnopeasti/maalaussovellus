@@ -21,11 +21,11 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Run all four in parallel:
-    // 1. SAM 2 auto-segment — pixel-perfect masks for all regions
-    // 2. SAM 3 wall prompt — wooden siding / painted plank surfaces specifically
-    // 3. SAM 3 opening prompt — windows and doors
-    // 4. SAM 3 ignore prompt — roof, sky, grass, ground, vegetation (force-ignore)
+    // Run all four models in parallel:
+    // 1. SAM 2 auto-segment  — pixel-perfect candidate masks for the whole image
+    // 2. SAM 3 wall prompt   — wooden siding / painted plank surfaces
+    // 3. SAM 3 opening prompt— windows and doors (masks used DIRECTLY as openings)
+    // 4. SAM 3 ignore prompt — roof, sky, grass, ground, vegetation
     const empty: Sam3Output = { masks: [], boxes: [], metadata: [] };
     const [sam2Result, sam3WallResult, sam3OpeningResult, sam3IgnoreResult] =
       await Promise.all([
@@ -37,7 +37,7 @@ export async function POST(req: NextRequest) {
         ).catch(() => empty),
         runSam3Prompted(
           imageUrl,
-          "window, door, glass opening, entrance door",
+          "window, door, glass opening, entrance door, window frame, window pane",
           8,
         ).catch(() => empty),
         runSam3Prompted(
@@ -47,7 +47,8 @@ export async function POST(req: NextRequest) {
         ).catch(() => empty),
       ]);
 
-    const masks: MaskResult[] = sam2Result.individual_masks.map((img, idx) => ({
+    // SAM 2 masks — unclassified candidates
+    const sam2Masks: MaskResult[] = sam2Result.individual_masks.map((img, idx) => ({
       index: idx,
       url: img.url,
       width: img.width ?? 0,
@@ -55,15 +56,30 @@ export async function POST(req: NextRequest) {
       category: "ignored" as const,
     }));
 
+    // SAM 3 opening masks — pre-classified as "opening" directly.
+    // SAM 3 returns WHOLE window/door regions (not individual panes) because it
+    // understands the semantic concept of "window". This solves the multi-pane
+    // split problem without any manual input.
+    const sam3OpeningMasks: MaskResult[] = sam3OpeningResult.masks
+      .filter((img) => img.url)
+      .map((img, idx) => ({
+        index: 10000 + idx, // offset to avoid index collision with SAM 2 masks
+        url: img.url,
+        width: img.width ?? 0,
+        height: img.height ?? 0,
+        category: "opening" as const,
+      }));
+
+    // Combine: SAM 2 candidates + SAM 3 opening masks
+    const masks: MaskResult[] = [...sam2Masks, ...sam3OpeningMasks];
+
     const toHints = (
       boxes?: number[][] | null,
       metadata?: { score?: number; box?: number[] }[] | null,
     ): BBoxHint[] => {
       const src =
         boxes ??
-        metadata
-          ?.map((m) => m.box ?? [])
-          .filter((b) => b.length === 4) ??
+        metadata?.map((m) => m.box ?? []).filter((b) => b.length === 4) ??
         [];
       return src
         .filter((b) => Array.isArray(b) && b.length === 4)
@@ -76,9 +92,9 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({
       masks,
       combinedMaskUrl: sam2Result.combined_mask.url,
-      wallHints: toHints(sam3WallResult.boxes, sam3WallResult.metadata),
+      wallHints:    toHints(sam3WallResult.boxes,    sam3WallResult.metadata),
       openingHints: toHints(sam3OpeningResult.boxes, sam3OpeningResult.metadata),
-      ignoreHints: toHints(sam3IgnoreResult.boxes, sam3IgnoreResult.metadata),
+      ignoreHints:  toHints(sam3IgnoreResult.boxes,  sam3IgnoreResult.metadata),
     });
   } catch (err) {
     console.error("[/api/segment]", err);
