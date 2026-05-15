@@ -13,7 +13,6 @@ interface FormValues {
 
 interface Props {
   wallAreaM2: number;
-  visualizedImageUrl?: string;
   onSave: (data: {
     unitPrice: number;
     fixedCosts: number;
@@ -26,7 +25,6 @@ interface Props {
 
 export default function QuoteForm({
   wallAreaM2,
-  visualizedImageUrl,
   onSave,
   isSaving,
 }: Props) {
@@ -54,8 +52,6 @@ export default function QuoteForm({
     });
     setSaved(true);
   };
-
-  void visualizedImageUrl; // used by parent
 
   return (
     <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">

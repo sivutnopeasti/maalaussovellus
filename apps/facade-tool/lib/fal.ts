@@ -18,20 +18,8 @@ export interface FalImage {
   height?: number;
 }
 
-export interface Sam2AutoSegmentOutput {
-  combined_mask: FalImage;
-  individual_masks: FalImage[];
-}
-
 export interface DepthAnythingOutput {
   image: FalImage;
-}
-
-export interface ControlNetSdxlOutput {
-  images: FalImage[];
-  prompt?: string;
-  seed?: number;
-  has_nsfw_concepts?: boolean[];
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -43,53 +31,6 @@ export interface ControlNetSdxlOutput {
 export async function uploadToFalStorage(file: File): Promise<string> {
   const url = await fal.storage.upload(file);
   return url;
-}
-
-/** Run SAM 2 automatic segmentation on a hosted image. */
-export async function runSam2AutoSegment(
-  imageUrl: string,
-): Promise<Sam2AutoSegmentOutput> {
-  const result = await fal.subscribe("fal-ai/sam2/auto-segment", {
-    input: {
-      image_url: imageUrl,
-      points_per_side: 32,
-      pred_iou_thresh: 0.86,
-      stability_score_thresh: 0.92,
-      min_mask_region_area: 200,
-    },
-  });
-  return result.data as Sam2AutoSegmentOutput;
-}
-
-// ─── SAM 2 point-prompted (click) segmentation ───────────────────────────────
-
-export interface Sam2PointSegmentOutput {
-  image: FalImage;
-}
-
-/**
- * Run SAM 2 with explicit pixel-coordinate point prompts.
- * x and y must be **pixel coordinates** in the original image space.
- * label: 1 = foreground (include), 0 = background (exclude)
- * apply_mask: false → returns binary mask (white = selected area)
- */
-export async function runSam2PointSegment(
-  imageUrl: string,
-  points: Array<{ x: number; y: number; label: 1 | 0 }>,
-): Promise<Sam2PointSegmentOutput> {
-  // Fal.ai TypeScript type says label: "0"|"1" but JSON docs show numeric 0|1.
-  // The overloaded fal.subscribe types are too strict here — use a plain function call.
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const falAny = fal as any;
-  const result = await falAny.subscribe("fal-ai/sam2/image", {
-    input: {
-      image_url: imageUrl,
-      prompts: points.map((p) => ({ x: p.x, y: p.y, label: p.label })),
-      apply_mask: true,
-      output_format: "png",
-    },
-  });
-  return result.data as unknown as Sam2PointSegmentOutput;
 }
 
 // ─── SAM 3 text-prompted segmentation ────────────────────────────────────────
@@ -140,20 +81,6 @@ export async function runDepthEstimation(
   return result.data as DepthAnythingOutput;
 }
 
-/** Run Canny edge detection — returns edge map image. */
-export async function runCannyEdgeDetection(
-  imageUrl: string,
-): Promise<DepthAnythingOutput> {
-  const result = await fal.subscribe("fal-ai/image-preprocessors/canny", {
-    input: {
-      image_url: imageUrl,
-      low_threshold: 50,
-      high_threshold: 150,
-    },
-  });
-  return result.data as DepthAnythingOutput;
-}
-
 /** Run MLSD line-segment detection — returns image with detected lines. */
 export async function runMlsdLineDetection(
   imageUrl: string,
@@ -166,28 +93,4 @@ export async function runMlsdLineDetection(
     },
   });
   return result.data as DepthAnythingOutput;
-}
-
-/** Run SDXL + ControlNet Canny to recolor facade walls. */
-export async function runVisualization(
-  controlImageUrl: string,
-  colorName: string,
-  colorHex: string,
-): Promise<ControlNetSdxlOutput> {
-  const prompt = `Professional house painting, ${colorName} exterior walls color ${colorHex}, clean paint finish, architectural photography, natural daylight, photorealistic`;
-  const negativePrompt =
-    "cartoon, illustration, animation, blurry, low quality, deformed, ugly, unrealistic";
-
-  const result = await fal.subscribe("fal-ai/fast-sdxl-controlnet-canny", {
-    input: {
-      control_image_url: controlImageUrl,
-      prompt,
-      negative_prompt: negativePrompt,
-      num_inference_steps: 35,
-      guidance_scale: 7.5,
-      controlnet_conditioning_scale: 0.65,
-      num_images: 1,
-    },
-  });
-  return result.data as unknown as ControlNetSdxlOutput;
 }

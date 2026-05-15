@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { Building2, ChevronRight, CheckCircle2, Loader2, AlertCircle } from "lucide-react";
 import ImageUpload from "@/components/ImageUpload";
 import ReferenceMeasure from "@/components/ReferenceMeasure";
-import type { ReferenceData, AnalysisSession, MaskResult, BBoxHint } from "@/lib/types";
+import type { ReferenceData, AnalysisSession, MaskResult } from "@/lib/types";
 
 type Step = "upload" | "reference" | "analysing";
 
@@ -74,15 +74,11 @@ export default function HomePage() {
       const segData: {
         masks: MaskResult[];
         wallMaskUrl?: string | null;
-        wallHints: BBoxHint[];
-        openingHints: BBoxHint[];
-        ignoreHints: BBoxHint[];
       } = await segRes.json();
       const {
         depthMapUrl,
-        cannyMapUrl,
         mlsdMapUrl,
-      }: { depthMapUrl: string; cannyMapUrl: string | null; mlsdMapUrl: string | null } =
+      }: { depthMapUrl: string; mlsdMapUrl: string | null } =
         await depthRes.json();
 
       const session: AnalysisSession = {
@@ -93,11 +89,7 @@ export default function HomePage() {
         masks: segData.masks,
         wallMaskUrl: segData.wallMaskUrl ?? null,
         depthMapUrl,
-        cannyMapUrl,
         mlsdMapUrl,
-        wallHints: segData.wallHints ?? [],
-        openingHints: segData.openingHints ?? [],
-        ignoreHints: segData.ignoreHints ?? [],
       };
 
       sessionStorage.setItem("facadeSession", JSON.stringify(session));
