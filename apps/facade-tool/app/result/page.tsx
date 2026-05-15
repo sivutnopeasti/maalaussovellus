@@ -214,7 +214,7 @@ export default function ResultPage() {
           )}
 
           <div className="grid grid-cols-1 lg:grid-cols-5 gap-6">
-            {/* Left — original image + visualization */}
+            {/* Left — original image + visualization + analysis maps */}
             <div className="lg:col-span-3 space-y-4">
               {/* Original image — hidden once visualization is ready */}
               {!visualizedUrl && (
@@ -227,6 +227,42 @@ export default function ResultPage() {
                   </div>
                   {/* eslint-disable-next-line @next/next/no-img-element */}
                   <img src={session.uploadedImageUrl} alt="Alkuperäinen julkisivu" className="w-full" />
+                </div>
+              )}
+
+              {/* Analysis maps — depth + canny side by side */}
+              {(session.depthMapUrl || session.cannyMapUrl || session.mlsdMapUrl) && (
+                <div className="bg-white rounded-2xl border border-indigo-200 overflow-hidden shadow-sm">
+                  <div className="px-4 py-3 border-b border-indigo-100">
+                    <span className="text-sm font-medium text-indigo-700">Analyysikartat</span>
+                    <span className="text-xs text-indigo-400 ml-2">käytetään pinta-alan laskennassa</span>
+                  </div>
+                  <div className="grid grid-cols-3 gap-0 divide-x divide-slate-100">
+                    {session.depthMapUrl && (
+                      <div className="p-2 space-y-1">
+                        <p className="text-xs text-center font-medium text-slate-600">Syvyyskartta</p>
+                        <p className="text-xs text-center text-slate-400">kirkas = lähellä</p>
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img src={session.depthMapUrl} alt="Syvyyskartta" className="w-full rounded" />
+                      </div>
+                    )}
+                    {session.mlsdMapUrl && (
+                      <div className="p-2 space-y-1">
+                        <p className="text-xs text-center font-medium text-slate-600">MLSD-viivat</p>
+                        <p className="text-xs text-center text-slate-400">suorat rakenteet</p>
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img src={session.mlsdMapUrl} alt="MLSD-viivakartta" className="w-full rounded" />
+                      </div>
+                    )}
+                    {session.cannyMapUrl && (
+                      <div className="p-2 space-y-1">
+                        <p className="text-xs text-center font-medium text-slate-600">Canny-reunat</p>
+                        <p className="text-xs text-center text-slate-400">kaikki reunat</p>
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img src={session.cannyMapUrl} alt="Canny-reunakartta" className="w-full rounded" />
+                      </div>
+                    )}
+                  </div>
                 </div>
               )}
 

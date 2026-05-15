@@ -1,14 +1,21 @@
 /**
- * Automatic mask classification engine — signal priority:
+ * Automatic mask classification engine
  *
- *  1. SAM 3 IGNORE hints  — roof / sky / grass / ground → always ignored (highest priority)
- *  2. Color veto          — very green (grass) or very dark blue (sky) → ignored
- *  3. Position veto       — pure top/bottom strips → ignored
- *  4. SAM 3 OPENING hints — window / door → opening
- *  5. SAM 3 WALL hints    — wooden siding / painted boards → wall
- *  6. Depth heuristic     — sky = dark depth, ground = very bright depth
- *  7. Color uniformity    — uniform mid-range color → wall candidate
- *  8. Size + position     — large mid-image region → wall
+ * Core principle: DEFAULT IS IGNORED.
+ * A mask is only upgraded to "wall" or "opening" when there is
+ * clear positive evidence. This prevents roofs, grass, and sky
+ * from being mislabelled as walls.
+ *
+ * Signal priority (applied in order):
+ *  1. Immediately ignored:  top/bottom strips, very small masks
+ *  2. SAM 3 IGNORE hints   — roof / sky / grass → ignored
+ *  3. Position veto         — top 35 % or bottom 35 % of image → ignored
+ *  4. Depth veto            — sky-dark or close-ground depth → ignored
+ *  5. Color veto            — clearly green or sky-blue → ignored
+ *  6. SAM 3 OPENING hints   — window / door → opening
+ *  7. SAM 3 WALL hints      — wooden siding / painted boards → wall ✓
+ *  8. Uniformity + midzone  — consistent mid-image region → wall ✓
+ *  9. Everything else       — ignored (conservative)
  */
 
 import type { MaskResult, MaskCategory, BBoxHint } from "./types";
@@ -55,7 +62,13 @@ export async function autoClassifyMasks(
   const oW = originalCanvas?.width ?? imageWidth;
   const oH = originalCanvas?.height ?? imageHeight;
 
-  return masks.map((mask, i) => {
+  const hasDepth = !!depthData;
+  const hasColor = !!origData;
+  const hasWallHints = wallHints.length > 0;
+  const hasOpeningHints = openingHints.length > 0;
+  const hasIgnoreHints = ignoreHints.length > 0;
+
+  return masks.map((mask, i): MaskResult => {
     const mc = maskCanvases[i];
     if (!mc) return { ...mask, category: "ignored" };
 
@@ -66,6 +79,7 @@ export async function autoClassifyMasks(
     const stats = computeMaskStats(mData, mW, mH);
     if (stats.pixelCount === 0) return { ...mask, category: "ignored" };
 
+    // Normalised coordinates
     const cx = stats.centerX / mW;
     const cy = stats.centerY / mH;
     const bx1 = stats.minX / mW;
@@ -76,91 +90,87 @@ export async function autoClassifyMasks(
     const bh = by2 - by1;
     const relSize = stats.pixelCount / (mW * mH);
 
-    // ── 1. SAM 3 IGNORE signal (highest priority) ────────────────────────────
-    const ignoreScore = bestBBoxOverlap(cx, cy, bx1, by1, bw, bh, ignoreHints);
-    if (ignoreScore > 0.25) {
-      return { ...mask, category: "ignored", pixelCount: stats.pixelCount };
+    const categorise = (cat: MaskCategory): MaskResult => ({
+      ...mask,
+      category: cat,
+      pixelCount: stats.pixelCount,
+    });
+
+    // ── 1. Instant veto: fringe strips and noise ─────────────────────────────
+    if (by2 < 0.08) return categorise("ignored");          // pure top strip
+    if (by1 > 0.92) return categorise("ignored");          // pure bottom strip
+    if (relSize < 0.003) return categorise("ignored");     // too small
+
+    // ── 2. SAM 3 IGNORE hints ────────────────────────────────────────────────
+    if (hasIgnoreHints) {
+      const ignoreScore = bestBBoxOverlap(cx, cy, bx1, by1, bw, bh, ignoreHints);
+      if (ignoreScore > 0.12) return categorise("ignored");
     }
 
-    // ── 2. Color veto ────────────────────────────────────────────────────────
+    // ── 3. Strict position veto ───────────────────────────────────────────────
+    // Top 35 % of image centre → sky / roof area
+    if (cy < 0.35) return categorise("ignored");
+    // Bottom 35 % of image centre → ground / grass area
+    if (cy > 0.65) return categorise("ignored");
+    // Mask centre is mid-image but top edge starts very high AND the mask is wide
+    // → likely a roof that extends into the mid section
+    const roofLike = by1 < 0.12 && bw > 0.35 && bh > 0.15;
+    if (roofLike) return categorise("ignored");
+
+    // ── 4. Depth veto ─────────────────────────────────────────────────────────
+    if (hasDepth) {
+      const avgDepth = sampleAvgDepth(mData, mW, mH, depthData!, dW, dH);
+      // DepthAnything: brighter = closer, darker = farther
+      if (avgDepth < 18) return categorise("ignored");             // very far = sky
+      if (avgDepth > 235 && cy > 0.55) return categorise("ignored"); // very close + low = ground
+    }
+
+    // ── 5. Color veto ─────────────────────────────────────────────────────────
     let colorStats = { avgR: 128, avgG: 128, avgB: 128, uniformity: 0.5, avgBrightness: 128 };
-    if (origData) {
-      colorStats = sampleColorStats(mData, mW, mH, origData, oW, oH);
+    if (hasColor) {
+      colorStats = sampleColorStats(mData, mW, mH, origData!, oW, oH);
     }
     const { avgR, avgG, avgB, uniformity, avgBrightness } = colorStats;
 
-    // Very green → grass/vegetation → ignore
-    const isGreen = avgG > avgR + 25 && avgG > avgB + 20 && avgG > 80;
-    // Very blue-dark → sky → ignore
-    const isSky = avgB > avgR + 20 && avgB > avgG + 10 && avgBrightness > 140;
-    // Very dark → shadow/tree area → ignore
-    const isVeryDark = avgBrightness < 35;
-    if (isGreen || isSky || isVeryDark) {
-      return { ...mask, category: "ignored", pixelCount: stats.pixelCount };
+    const isGreen = avgG > avgR + 20 && avgG > avgB + 15 && avgG > 70;
+    const isSky = avgB > avgR + 15 && avgB > avgG + 5 && avgBrightness > 130;
+    const isVeryDark = avgBrightness < 30;
+    if (isGreen || isSky || isVeryDark) return categorise("ignored");
+
+    // ── 6. SAM 3 OPENING signal ───────────────────────────────────────────────
+    if (hasOpeningHints) {
+      const openingScore = bestBBoxOverlap(cx, cy, bx1, by1, bw, bh, openingHints);
+      if (openingScore > 0.15) return categorise("opening");
     }
 
-    // ── 3. Position veto ─────────────────────────────────────────────────────
-    const isTopStrip = by2 < 0.12;
-    const isBottomStrip = by1 > 0.88;
-    if (isTopStrip || isBottomStrip) {
-      return { ...mask, category: "ignored", pixelCount: stats.pixelCount };
-    }
-    // Large area at bottom → ground/grass
-    if (by1 > 0.65 && relSize > 0.06) {
-      return { ...mask, category: "ignored", pixelCount: stats.pixelCount };
-    }
-    // Tiny fragment → noise
-    if (relSize < 0.002) {
-      return { ...mask, category: "ignored", pixelCount: stats.pixelCount };
+    // Small dark region in middle of image → window/door opening
+    if (hasColor && avgBrightness < 90 && relSize < 0.06 && relSize > 0.003) {
+      return categorise("opening");
     }
 
-    // ── 4. SAM 3 OPENING signal ───────────────────────────────────────────────
-    const openingScore = bestBBoxOverlap(cx, cy, bx1, by1, bw, bh, openingHints);
-    if (openingScore > 0.2) {
-      return { ...mask, category: "opening", pixelCount: stats.pixelCount };
+    // ── 7. SAM 3 WALL signal ──────────────────────────────────────────────────
+    if (hasWallHints) {
+      const wallScore = bestBBoxOverlap(cx, cy, bx1, by1, bw, bh, wallHints);
+      if (wallScore > 0.15) return categorise("wall");
     }
 
-    // ── 5. SAM 3 WALL signal ──────────────────────────────────────────────────
-    const wallScore = bestBBoxOverlap(cx, cy, bx1, by1, bw, bh, wallHints);
-    if (wallScore > 0.2) {
-      return { ...mask, category: "wall", pixelCount: stats.pixelCount };
+    // ── 8. Uniformity + mid-zone heuristic ───────────────────────────────────
+    // Only classify as wall when mask centre is solidly in the building zone
+    // (35–65 % vertically) AND color is consistent (not grass, sky already vetoed above)
+    const inBuildingZone = cy >= 0.35 && cy <= 0.65;
+    const solidRegion = relSize > 0.01 && bh > 0.08;
+
+    if (inBuildingZone && solidRegion && uniformity > 0.5) {
+      return categorise("wall");
     }
 
-    // ── 6. Depth heuristic ────────────────────────────────────────────────────
-    if (depthData) {
-      const avgDepth = sampleAvgDepth(mData, mW, mH, depthData, dW, dH);
-      if (avgDepth < 20) {
-        return { ...mask, category: "ignored", pixelCount: stats.pixelCount }; // sky/distant
-      }
-      if (avgDepth > 230 && cy > 0.65) {
-        return { ...mask, category: "ignored", pixelCount: stats.pixelCount }; // close ground
-      }
+    // Larger mid-image region with decent uniformity even without color data
+    if (inBuildingZone && relSize > 0.04 && !hasColor) {
+      return categorise("wall");
     }
 
-    // ── 7. Color uniformity → wall candidate ─────────────────────────────────
-    const isMidImage = cy > 0.12 && cy < 0.88;
-    // Roofs tend to be: upper portion, lighter, angled large area
-    const likelyRoof = cy < 0.4 && bh > 0.25 && bw > 0.4;
-    if (likelyRoof) {
-      return { ...mask, category: "ignored", pixelCount: stats.pixelCount };
-    }
-
-    if (isMidImage && uniformity > 0.45 && relSize > 0.008) {
-      return { ...mask, category: "wall", pixelCount: stats.pixelCount };
-    }
-
-    // Dark small region in the middle → likely window
-    const isDark = avgBrightness < 80;
-    if (isMidImage && isDark && relSize < 0.07 && relSize > 0.003) {
-      return { ...mask, category: "opening", pixelCount: stats.pixelCount };
-    }
-
-    // ── 8. Size + position fallback ───────────────────────────────────────────
-    if (isMidImage && relSize > 0.025 && bh > 0.1) {
-      return { ...mask, category: "wall", pixelCount: stats.pixelCount };
-    }
-
-    return { ...mask, category: "ignored", pixelCount: stats.pixelCount };
+    // ── 9. Default: ignored ───────────────────────────────────────────────────
+    return categorise("ignored");
   });
 }
 
@@ -211,12 +221,17 @@ function bestBBoxOverlap(
   let best = 0;
   for (const hint of hints) {
     const [hcx, hcy, hw, hh] = hint.box;
-    const hx1 = hcx - hw / 2, hy1 = hcy - hh / 2;
-    const hx2 = hcx + hw / 2, hy2 = hcy + hh / 2;
-    const centroid = cx >= hx1 && cx <= hx2 && cy >= hy1 && cy <= hy2 ? 0.6 : 0;
+    const hx1 = hcx - hw / 2;
+    const hy1 = hcy - hh / 2;
+    const hx2 = hcx + hw / 2;
+    const hy2 = hcy + hh / 2;
+    // Centroid inside hint box
+    const centroid = (cx >= hx1 && cx <= hx2 && cy >= hy1 && cy <= hy2) ? 0.7 : 0;
+    // IoU
     const ix = Math.max(0, Math.min(mx1 + mw, hx2) - Math.max(mx1, hx1));
     const iy = Math.max(0, Math.min(my1 + mh, hy2) - Math.max(my1, hy1));
-    const iou = (mw * mh + hw * hh - ix * iy) > 0 ? (ix * iy) / (mw * mh + hw * hh - ix * iy) : 0;
+    const union = mw * mh + hw * hh - ix * iy;
+    const iou = union > 0 ? (ix * iy) / union : 0;
     const score = Math.max(centroid, iou);
     if (score > best) best = score;
   }
@@ -285,7 +300,8 @@ function loadImg(url: string): Promise<HTMLCanvasElement> {
     img.crossOrigin = "anonymous";
     img.onload = () => {
       const c = document.createElement("canvas");
-      c.width = img.width; c.height = img.height;
+      c.width = img.width;
+      c.height = img.height;
       c.getContext("2d")!.drawImage(img, 0, 0);
       resolve(c);
     };
