@@ -77,10 +77,17 @@ export async function runSam2PointSegment(
   imageUrl: string,
   points: Array<{ x: number; y: number; label: 1 | 0 }>,
 ): Promise<Sam2PointSegmentOutput> {
+  // Fal.ai PointPrompt expects label as string "1" | "0"
+  const prompts = points.map((p) => ({
+    x: p.x,
+    y: p.y,
+    label: String(p.label) as "1" | "0",
+  }));
+
   const result = await fal.subscribe("fal-ai/sam2/image", {
     input: {
       image_url: imageUrl,
-      prompts: points,
+      prompts,
       apply_mask: false,
       output_format: "png",
     },
