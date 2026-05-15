@@ -61,6 +61,43 @@ export async function runSam2AutoSegment(
   return result.data as Sam2AutoSegmentOutput;
 }
 
+// ─── SAM 3 text-prompted segmentation ────────────────────────────────────────
+
+export interface Sam3MaskMetadata {
+  score?: number;
+  /** Normalized bounding box [cx, cy, w, h] */
+  box?: number[];
+}
+
+export interface Sam3Output {
+  masks: FalImage[];
+  metadata?: Sam3MaskMetadata[];
+  boxes?: number[][];
+}
+
+/**
+ * Run SAM 3 with a text prompt to locate specific objects in the image.
+ * Returns up to maxMasks masks + their normalized bounding boxes.
+ */
+export async function runSam3Prompted(
+  imageUrl: string,
+  prompt: string,
+  maxMasks = 6,
+): Promise<Sam3Output> {
+  const result = await fal.subscribe("fal-ai/sam-3/image", {
+    input: {
+      image_url: imageUrl,
+      prompt,
+      return_multiple_masks: true,
+      max_masks: maxMasks,
+      include_boxes: true,
+      apply_mask: false,
+      output_format: "png",
+    },
+  });
+  return result.data as unknown as Sam3Output;
+}
+
 /** Run Depth Anything V2 depth estimation on a hosted image. */
 export async function runDepthEstimation(
   imageUrl: string,

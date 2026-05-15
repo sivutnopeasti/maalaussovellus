@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { Building2, ChevronRight, CheckCircle2, Loader2, AlertCircle } from "lucide-react";
 import ImageUpload from "@/components/ImageUpload";
 import ReferenceMeasure from "@/components/ReferenceMeasure";
-import type { ReferenceData, AnalysisSession, MaskResult } from "@/lib/types";
+import type { ReferenceData, AnalysisSession, MaskResult, BBoxHint } from "@/lib/types";
 
 type Step = "upload" | "reference" | "analysing";
 
@@ -72,7 +72,8 @@ export default function HomePage() {
         throw new Error(e.error ?? "Syvyyskartan luominen epäonnistui.");
       }
 
-      const { masks }: { masks: MaskResult[] } = await segRes.json();
+      const segData: { masks: MaskResult[]; wallHints: BBoxHint[]; openingHints: BBoxHint[] } =
+        await segRes.json();
       const { depthMapUrl }: { depthMapUrl: string } = await depthRes.json();
 
       const session: AnalysisSession = {
@@ -80,8 +81,10 @@ export default function HomePage() {
         imageWidth: imageDimensions.w,
         imageHeight: imageDimensions.h,
         reference,
-        masks,
+        masks: segData.masks,
         depthMapUrl,
+        wallHints: segData.wallHints ?? [],
+        openingHints: segData.openingHints ?? [],
       };
 
       sessionStorage.setItem("facadeSession", JSON.stringify(session));

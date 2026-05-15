@@ -21,6 +21,7 @@ import {
   calculateWallArea,
   depthCorrectedArea,
 } from "@/lib/measure";
+import { autoClassifyMasks } from "@/lib/autoClassify";
 import type {
   AnalysisSession,
   MaskResult,
@@ -34,6 +35,7 @@ export default function ResultPage() {
   const router = useRouter();
   const [session, setSession] = useState<AnalysisSession | null>(null);
   const [masks, setMasks] = useState<MaskResult[]>([]);
+  const [isAutoClassifying, setIsAutoClassifying] = useState(false);
   const [measurement, setMeasurement] = useState<MeasurementResult | null>(null);
   const [selectedColor, setSelectedColor] = useState<PaintColor | null>(null);
   const [customHex, setCustomHex] = useState<string>("#FFFFFF");
@@ -44,7 +46,7 @@ export default function ResultPage() {
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Load session from sessionStorage on mount
+  // Load session and run auto-classification on mount
   useEffect(() => {
     const raw = sessionStorage.getItem("facadeSession");
     if (!raw) {
@@ -54,6 +56,21 @@ export default function ResultPage() {
     const s: AnalysisSession = JSON.parse(raw);
     setSession(s);
     setMasks(s.masks);
+
+    // Auto-classify masks using all available signals
+    setIsAutoClassifying(true);
+    autoClassifyMasks({
+      masks: s.masks,
+      imageWidth: s.imageWidth,
+      imageHeight: s.imageHeight,
+      wallHints: s.wallHints ?? [],
+      openingHints: s.openingHints ?? [],
+      depthMapUrl: s.depthMapUrl,
+      imageUrl: s.uploadedImageUrl,
+    })
+      .then((classified) => setMasks(classified))
+      .catch((e) => console.warn("Auto-classify error:", e))
+      .finally(() => setIsAutoClassifying(false));
   }, [router]);
 
   const handleMasksUpdated = useCallback((updated: MaskResult[]) => {
@@ -263,16 +280,24 @@ export default function ResultPage() {
                 icon={<Layers />}
                 title="1. Luokittele alueet"
                 subtitle={
-                  canCalculate
-                    ? `${wallCount} seinä, ${openingCount} aukkoa`
-                    : "Merkitse seinät ja aukot"
+                  isAutoClassifying
+                    ? "Tekoäly luokittelee automaattisesti..."
+                    : canCalculate
+                      ? `${wallCount} seinää, ${openingCount} aukkoa — tarkista ja korjaa tarvittaessa`
+                      : "Merkitse seinät ja aukot"
                 }
                 isOpen={openPanel === "segment"}
-                isDone={canCalculate}
+                isDone={canCalculate && !isAutoClassifying}
                 onToggle={() =>
                   setOpenPanel(openPanel === "segment" ? "measure" : "segment")
                 }
               >
+                {isAutoClassifying && (
+                  <div className="flex items-center gap-2 p-3 bg-blue-50 rounded-xl text-sm text-blue-700 mb-3">
+                    <Loader2 className="w-4 h-4 animate-spin shrink-0" />
+                    <span>Analysoidaan automaattisesti: SAM 3 semantiikka + syvyys + väri + sijainti...</span>
+                  </div>
+                )}
                 <SegmentationOverlay
                   masks={masks}
                   originalImageUrl={session.uploadedImageUrl}

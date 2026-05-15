@@ -22,6 +22,13 @@ export interface MaskResult {
   pixelCount?: number;
 }
 
+/** Normalized bounding box hint from SAM 3 text-prompted detection */
+export interface BBoxHint {
+  /** Normalized [cx, cy, w, h] — values 0–1 */
+  box: [number, number, number, number];
+  score?: number;
+}
+
 export interface AnalysisSession {
   /** URL in fal.ai storage — passed to AI models and used for display */
   uploadedImageUrl: string;
@@ -30,6 +37,10 @@ export interface AnalysisSession {
   reference: ReferenceData;
   masks: MaskResult[];
   depthMapUrl: string;
+  /** SAM 3 text-detected wall regions (normalized bboxes) */
+  wallHints: BBoxHint[];
+  /** SAM 3 text-detected opening regions (normalized bboxes) */
+  openingHints: BBoxHint[];
 }
 
 export interface MeasurementResult {
