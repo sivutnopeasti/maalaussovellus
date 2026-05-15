@@ -221,17 +221,28 @@ export default function ResultPage() {
           <div className="grid grid-cols-1 lg:grid-cols-5 gap-6">
             {/* Left — original image + visualization + analysis maps */}
             <div className="lg:col-span-3 space-y-4">
-              {/* Original image — hidden once visualization is ready */}
+              {/* Segmentation overlay — always visible as main view */}
               {!visualizedUrl && (
                 <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden shadow-sm">
                   <div className="px-4 py-3 border-b border-slate-100 flex items-center justify-between">
-                    <span className="text-sm font-medium text-slate-700">Alkuperäinen kuva</span>
+                    <span className="text-sm font-medium text-slate-700">
+                      {isAutoClassifying ? "Analysoidaan..." : "Tunnistetut alueet"}
+                    </span>
                     <span className="text-xs text-slate-400">
                       {session.imageWidth} × {session.imageHeight} px
                     </span>
                   </div>
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img src={session.uploadedImageUrl} alt="Alkuperäinen julkisivu" className="w-full" />
+                  <div className="p-2">
+                    <SegmentationOverlay
+                      masks={masks}
+                      originalImageUrl={session.uploadedImageUrl}
+                      imageWidth={session.imageWidth}
+                      imageHeight={session.imageHeight}
+                      isAutoClassifying={isAutoClassifying}
+                      onMasksUpdated={handleMasksUpdated}
+                      canvasOnly
+                    />
+                  </div>
                 </div>
               )}
 
@@ -319,6 +330,7 @@ export default function ResultPage() {
                     <span>Analysoidaan automaattisesti: SAM 3 semantiikka + syvyys + väri + sijainti...</span>
                   </div>
                 )}
+                {/* Mask list for manual correction (canvas shown in left column) */}
                 <SegmentationOverlay
                   masks={masks}
                   originalImageUrl={session.uploadedImageUrl}
@@ -326,10 +338,11 @@ export default function ResultPage() {
                   imageHeight={session.imageHeight}
                   isAutoClassifying={isAutoClassifying}
                   onMasksUpdated={handleMasksUpdated}
+                  listOnly
                 />
 
                 {/* Click-to-segment — add walls/openings by clicking */}
-                <div className="mt-4 pt-4 border-t border-slate-100">
+                <div className="mt-3 pt-3 border-t border-slate-100">
                   <p className="text-xs font-medium text-slate-600 mb-2">
                     Lisää alueita klikkaamalla
                   </p>

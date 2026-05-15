@@ -29,6 +29,10 @@ interface Props {
   imageHeight: number;
   isAutoClassifying?: boolean;
   onMasksUpdated: (masks: MaskResult[]) => void;
+  /** Show only the canvas (no list). Default: false */
+  canvasOnly?: boolean;
+  /** Show only the list (no canvas). Default: false */
+  listOnly?: boolean;
 }
 
 export default function SegmentationOverlay({
@@ -36,6 +40,8 @@ export default function SegmentationOverlay({
   originalImageUrl,
   isAutoClassifying,
   onMasksUpdated,
+  canvasOnly = false,
+  listOnly = false,
 }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [isRendering, setIsRendering] = useState(false);
@@ -120,117 +126,128 @@ export default function SegmentationOverlay({
   };
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-3">
       {/* ── Canvas preview ──────────────────────────────────────────────── */}
-      <div className="relative rounded-xl overflow-hidden border border-slate-200 bg-slate-900">
-        {(isRendering || isAutoClassifying) && (
-          <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-black/50 z-10 text-white text-sm">
-            <RefreshCw className="w-5 h-5 animate-spin" />
-            {isAutoClassifying ? "Luokitellaan automaattisesti..." : "Renderöidään..."}
+      {!listOnly && (
+        <div className="relative rounded-xl overflow-hidden border border-slate-200 bg-slate-900">
+          {(isRendering || isAutoClassifying) && (
+            <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-black/50 z-10 text-white text-sm">
+              <RefreshCw className="w-5 h-5 animate-spin" />
+              {isAutoClassifying ? "Luokitellaan automaattisesti..." : "Renderöidään..."}
+            </div>
+          )}
+
+          <canvas
+            ref={canvasRef}
+            className="w-full block"
+            style={{ imageRendering: "auto" }}
+          />
+
+          {/* Legend */}
+          <div className="absolute bottom-2 left-2 flex gap-2">
+            <LegendChip color="#22C55E" label="Seinä" />
+            <LegendChip color="#EF4444" label="Aukko" />
           </div>
-        )}
 
-        <canvas
-          ref={canvasRef}
-          className="w-full block"
-          style={{ imageRendering: "auto" }}
-        />
-
-        {/* Legend */}
-        <div className="absolute bottom-2 left-2 flex gap-2">
-          <LegendChip color="#22C55E" label="Seinä" />
-          <LegendChip color="#EF4444" label="Aukko" />
+          {/* Counts overlay */}
+          <div className="absolute top-2 right-2 flex gap-1.5">
+            {walls.length > 0 && (
+              <span className="px-2 py-0.5 bg-green-600/90 text-white text-xs rounded-full font-semibold backdrop-blur-sm">
+                {walls.length} seinää
+              </span>
+            )}
+            {openings.length > 0 && (
+              <span className="px-2 py-0.5 bg-red-600/90 text-white text-xs rounded-full font-semibold backdrop-blur-sm">
+                {openings.length} aukkoa
+              </span>
+            )}
+          </div>
         </div>
-      </div>
-
-      {/* ── Summary + list toggle ──────────────────────────────────────── */}
-      <div className="flex items-center justify-between">
-        <div className="flex flex-wrap gap-2 text-xs">
-          <span className="px-2 py-1 bg-green-100 text-green-700 rounded-full font-semibold">
-            {walls.length} seinäaluetta
-          </span>
-          <span className="px-2 py-1 bg-red-100 text-red-700 rounded-full font-semibold">
-            {openings.length} aukkoa
-          </span>
-          <span className="px-2 py-1 bg-slate-100 text-slate-500 rounded-full">
-            {ignored.length} ohitettu
-          </span>
-        </div>
-        <button
-          onClick={() => setShowList((v) => !v)}
-          className="text-xs text-blue-600 hover:underline"
-        >
-          {showList ? "Piilota lista" : "Muokkaa alueita"}
-        </button>
-      </div>
+      )}
 
       {/* ── Manual correction list ─────────────────────────────────────── */}
-      {showList && (
-        <div className="space-y-1.5">
-          <div className="flex items-center gap-2 text-xs font-medium text-slate-500 uppercase tracking-wide px-1">
-            <Layers className="w-3.5 h-3.5" />
-            Tarkista ja korjaa tarvittaessa
+      {!canvasOnly && (
+        <>
+          {/* Summary bar */}
+          <div className="flex items-center justify-between">
+            <div className="flex flex-wrap gap-1.5 text-xs">
+              <span className="px-2 py-1 bg-green-100 text-green-700 rounded-full font-semibold">
+                {walls.length} seinäaluetta
+              </span>
+              <span className="px-2 py-1 bg-red-100 text-red-700 rounded-full font-semibold">
+                {openings.length} aukkoa
+              </span>
+              <span className="px-2 py-1 bg-slate-100 text-slate-500 rounded-full">
+                {ignored.length} ohitettu
+              </span>
+            </div>
+            <button
+              onClick={() => setShowList((v) => !v)}
+              className="text-xs text-blue-600 hover:underline shrink-0 ml-2"
+            >
+              {showList ? "Piilota lista" : "Muokkaa alueita"}
+            </button>
           </div>
 
-          <div className="grid grid-cols-1 gap-1.5 max-h-80 overflow-y-auto pr-0.5">
-            {masks.map((mask) => (
-              <div
-                key={mask.index}
-                className="flex items-center gap-2 p-2 rounded-lg border border-slate-100 bg-white hover:border-slate-200 transition-colors"
-              >
-                {/* Category dot */}
-                <div
-                  className="w-2.5 h-2.5 rounded-full shrink-0"
-                  style={{ backgroundColor: CATEGORY_COLORS[mask.category] }}
-                />
-
-                {/* Label */}
-                <span className="flex-1 text-xs text-slate-600 truncate">
-                  Alue {mask.index + 1}
-                  {mask.pixelCount != null && (
-                    <span className="text-slate-400 ml-1">
-                      ({(mask.pixelCount / 1000).toFixed(0)} kpx)
-                    </span>
-                  )}
-                  <span
-                    className="ml-1.5 font-medium"
-                    style={{ color: CATEGORY_COLORS[mask.category] }}
-                  >
-                    · {CATEGORY_LABELS[mask.category]}
-                  </span>
-                </span>
-
-                {/* Buttons */}
-                <div className="flex gap-1 shrink-0">
-                  {(
-                    [
-                      ["wall", "Seinä"],
-                      ["opening", "Aukko"],
-                      ["ignored", "Ohita"],
-                    ] as [MaskCategory, string][]
-                  ).map(([cat, label]) => (
-                    <button
-                      key={cat}
-                      onClick={() => setCategory(mask.index, cat)}
-                      className={`px-2 py-0.5 rounded text-xs font-medium transition-colors ${
-                        mask.category === cat
-                          ? "text-white"
-                          : "bg-slate-100 text-slate-500 hover:bg-slate-200"
-                      }`}
-                      style={
-                        mask.category === cat
-                          ? { backgroundColor: CATEGORY_COLORS[cat] }
-                          : undefined
-                      }
-                    >
-                      {label}
-                    </button>
-                  ))}
-                </div>
+          {showList && (
+            <div className="space-y-1">
+              <div className="flex items-center gap-2 text-xs font-medium text-slate-500 uppercase tracking-wide px-1">
+                <Layers className="w-3.5 h-3.5" />
+                Tarkista ja korjaa tarvittaessa
               </div>
-            ))}
-          </div>
-        </div>
+              <div className="grid grid-cols-1 gap-1 max-h-64 overflow-y-auto pr-0.5">
+                {masks.map((mask) => (
+                  <div
+                    key={mask.index}
+                    className="flex items-center gap-2 p-2 rounded-lg border border-slate-100 bg-white hover:border-slate-200 transition-colors"
+                  >
+                    <div
+                      className="w-2.5 h-2.5 rounded-full shrink-0"
+                      style={{ backgroundColor: CATEGORY_COLORS[mask.category] }}
+                    />
+                    <span className="flex-1 text-xs text-slate-600 truncate">
+                      Alue {mask.index + 1}
+                      {mask.pixelCount != null && (
+                        <span className="text-slate-400 ml-1">
+                          ({(mask.pixelCount / 1000).toFixed(0)} kpx)
+                        </span>
+                      )}
+                      <span className="ml-1.5 font-medium" style={{ color: CATEGORY_COLORS[mask.category] }}>
+                        · {CATEGORY_LABELS[mask.category]}
+                      </span>
+                    </span>
+                    <div className="flex gap-1 shrink-0">
+                      {(
+                        [
+                          ["wall", "Seinä"],
+                          ["opening", "Aukko"],
+                          ["ignored", "Ohita"],
+                        ] as [MaskCategory, string][]
+                      ).map(([cat, label]) => (
+                        <button
+                          key={cat}
+                          onClick={() => setCategory(mask.index, cat)}
+                          className={`px-2 py-0.5 rounded text-xs font-medium transition-colors ${
+                            mask.category === cat
+                              ? "text-white"
+                              : "bg-slate-100 text-slate-500 hover:bg-slate-200"
+                          }`}
+                          style={
+                            mask.category === cat
+                              ? { backgroundColor: CATEGORY_COLORS[cat] }
+                              : undefined
+                          }
+                        >
+                          {label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </>
       )}
     </div>
   );
