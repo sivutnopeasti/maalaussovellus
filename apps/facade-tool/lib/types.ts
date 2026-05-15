@@ -45,6 +45,8 @@ export interface PolygonData {
 export interface AnalysisSession {
   /** Facade outline polygon — when present, used instead of SAM wall masks for area. */
   polygon?: PolygonData;
+  /** SAM 3 wall mask URL — used for automatic corner detection on the result page. */
+  wallMaskUrl?: string | null;
   /** URL in fal.ai storage — passed to AI models and used for display */
   uploadedImageUrl: string;
   imageWidth: number;

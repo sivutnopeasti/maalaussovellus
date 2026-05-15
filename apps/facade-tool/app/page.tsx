@@ -5,10 +5,9 @@ import { useRouter } from "next/navigation";
 import { Building2, ChevronRight, CheckCircle2, Loader2, AlertCircle } from "lucide-react";
 import ImageUpload from "@/components/ImageUpload";
 import ReferenceMeasure from "@/components/ReferenceMeasure";
-import PolygonSelect from "@/components/PolygonSelect";
-import type { ReferenceData, PolygonData, AnalysisSession, MaskResult, BBoxHint } from "@/lib/types";
+import type { ReferenceData, AnalysisSession, MaskResult, BBoxHint } from "@/lib/types";
 
-type Step = "upload" | "reference" | "polygon" | "analysing";
+type Step = "upload" | "reference" | "analysing";
 
 export default function HomePage() {
   const router = useRouter();
@@ -17,14 +16,12 @@ export default function HomePage() {
   const [imageDataUrl, setImageDataUrl] = useState<string>("");
   const [imageDimensions, setImageDimensions] = useState({ w: 0, h: 0 });
   const [reference, setReference] = useState<ReferenceData | null>(null);
-  const [polygon, setPolygon] = useState<PolygonData | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const handleImageSelected = (file: File, dataUrl: string) => {
     setImageFile(file);
     setImageDataUrl(dataUrl);
     setReference(null);
-    // Detect natural dimensions
     const img = new Image();
     img.onload = () => setImageDimensions({ w: img.width, h: img.height });
     img.src = dataUrl;
@@ -33,15 +30,10 @@ export default function HomePage() {
 
   const handleReferenceSet = (data: ReferenceData) => {
     setReference(data);
-    setPolygon(null);
-  };
-
-  const handlePolygonSet = (data: PolygonData) => {
-    setPolygon(data);
   };
 
   const handleAnalyse = async () => {
-    if (!imageFile || !reference || !polygon) return;
+    if (!imageFile || !reference) return;
     setStep("analysing");
     setError(null);
 
@@ -81,6 +73,7 @@ export default function HomePage() {
 
       const segData: {
         masks: MaskResult[];
+        wallMaskUrl?: string | null;
         wallHints: BBoxHint[];
         openingHints: BBoxHint[];
         ignoreHints: BBoxHint[];
@@ -97,8 +90,8 @@ export default function HomePage() {
         imageWidth: imageDimensions.w,
         imageHeight: imageDimensions.h,
         reference,
-        polygon: polygon ?? undefined,
         masks: segData.masks,
+        wallMaskUrl: segData.wallMaskUrl ?? null,
         depthMapUrl,
         cannyMapUrl,
         mlsdMapUrl,
@@ -112,14 +105,13 @@ export default function HomePage() {
     } catch (err) {
       console.error(err);
       setError(err instanceof Error ? err.message : "Tuntematon virhe.");
-      setStep("polygon");
+      setStep("reference");
     }
   };
 
   const STEPS = [
-    { key: "upload", label: "Lataa kuva" },
+    { key: "upload",    label: "Lataa kuva" },
     { key: "reference", label: "Referenssimitta" },
-    { key: "polygon", label: "Rajaa julkisivu" },
     { key: "analysing", label: "Analysointi" },
   ] as const;
 
@@ -132,9 +124,7 @@ export default function HomePage() {
             <Building2 className="w-5 h-5 text-white" />
           </div>
           <div>
-            <h1 className="font-bold text-slate-900 leading-tight">
-              Julkisivutyökalu
-            </h1>
+            <h1 className="font-bold text-slate-900 leading-tight">Julkisivutyökalu</h1>
             <p className="text-xs text-slate-500">
               Maalausliike — neliömetrilaskenta ja värivisualisointi
             </p>
@@ -151,22 +141,13 @@ export default function HomePage() {
             const active = s.key === step;
             return (
               <div key={s.key} className="flex items-center gap-2">
-                {i > 0 && (
-                  <ChevronRight className="w-4 h-4 text-slate-300 shrink-0" />
-                )}
-                <div
-                  className={`flex items-center gap-1.5 text-sm font-medium px-3 py-1 rounded-full transition-colors ${
-                    done
-                      ? "bg-green-100 text-green-700"
-                      : active
-                        ? "bg-blue-600 text-white"
-                        : "text-slate-400"
-                  }`}
-                >
+                {i > 0 && <ChevronRight className="w-4 h-4 text-slate-300 shrink-0" />}
+                <div className={`flex items-center gap-1.5 text-sm font-medium px-3 py-1 rounded-full transition-colors ${
+                  done ? "bg-green-100 text-green-700"
+                       : active ? "bg-blue-600 text-white" : "text-slate-400"
+                }`}>
                   {done && <CheckCircle2 className="w-3.5 h-3.5" />}
-                  {active && s.key === "analysing" && (
-                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                  )}
+                  {active && s.key === "analysing" && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
                   {s.label}
                 </div>
               </div>
@@ -181,29 +162,20 @@ export default function HomePage() {
           {error && (
             <div className="flex items-start gap-3 p-4 bg-red-50 border border-red-200 rounded-xl text-sm text-red-700">
               <AlertCircle className="w-5 h-5 shrink-0 mt-0.5" />
-              <div>
-                <p className="font-medium">Virhe</p>
-                <p>{error}</p>
-              </div>
+              <div><p className="font-medium">Virhe</p><p>{error}</p></div>
             </div>
           )}
 
           {/* Step: upload */}
-          {(step === "upload" || step === "reference" || step === "polygon") && (
+          {(step === "upload" || step === "reference") && (
             <section className="bg-white rounded-2xl border border-slate-200 p-6 space-y-4 shadow-sm">
               <div className="flex items-center gap-2">
-                <div
-                  className={`w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold ${
-                    step === "upload"
-                      ? "bg-blue-600 text-white"
-                      : "bg-green-100 text-green-700"
-                  }`}
-                >
+                <div className={`w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold ${
+                  step === "upload" ? "bg-blue-600 text-white" : "bg-green-100 text-green-700"
+                }`}>
                   {step === "upload" ? "1" : <CheckCircle2 className="w-4 h-4" />}
                 </div>
-                <h2 className="font-semibold text-slate-800">
-                  Lataa julkisivukuva
-                </h2>
+                <h2 className="font-semibold text-slate-800">Lataa julkisivukuva</h2>
               </div>
               <ImageUpload
                 onImageSelected={handleImageSelected}
@@ -212,7 +184,6 @@ export default function HomePage() {
                   setImageFile(null);
                   setImageDataUrl("");
                   setReference(null);
-                  setPolygon(null);
                   setStep("upload");
                 }}
               />
@@ -220,30 +191,20 @@ export default function HomePage() {
           )}
 
           {/* Step: reference measure */}
-          {(step === "reference" || step === "polygon") && imageDataUrl && (
+          {step === "reference" && imageDataUrl && (
             <section className="bg-white rounded-2xl border border-slate-200 p-6 space-y-4 shadow-sm">
               <div className="flex items-center gap-2">
-                <div
-                  className={`w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold ${
-                    reference
-                      ? "bg-green-100 text-green-700"
-                      : "bg-blue-600 text-white"
-                  }`}
-                >
-                  {reference ? (
-                    <CheckCircle2 className="w-4 h-4" />
-                  ) : (
-                    "2"
-                  )}
+                <div className={`w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold ${
+                  reference ? "bg-green-100 text-green-700" : "bg-blue-600 text-white"
+                }`}>
+                  {reference ? <CheckCircle2 className="w-4 h-4" /> : "2"}
                 </div>
-                <h2 className="font-semibold text-slate-800">
-                  Aseta referenssimitta
-                </h2>
+                <h2 className="font-semibold text-slate-800">Aseta referenssimitta</h2>
               </div>
               <p className="text-sm text-slate-500">
-                Klikkaa kuvaan kaksi pistettä, joiden välinen todellinen etäisyys
-                tiedät (esim. alaseinän pituus tai oven korkeus). Tämä kalibroi
-                pikselimitan.
+                Piirrä viiva pitkin talon <strong>alinta lautaa</strong> tai muuta
+                vaakasuoraa rakennetta. Viiva antaa mittakaavan ja perspektiivikorjauksen.
+                Talon rajat merkitään seuraavassa vaiheessa automaattisesti.
               </p>
               <ReferenceMeasure
                 imageDataUrl={imageDataUrl}
@@ -256,54 +217,12 @@ export default function HomePage() {
                     Referenssimitta asetettu:{" "}
                     <strong>{reference.meters} m</strong> ={" "}
                     <strong>{reference.pixelDistance.toFixed(0)} pikseliä</strong>
-                    {" — "}
-                    {reference.pixelsPerMeter.toFixed(1)} px/m
-                  </span>
-                </div>
-              )}
-            </section>
-          )}
-
-          {/* "Continue to polygon" button */}
-          {step === "reference" && reference && (
-            <button
-              onClick={() => setStep("polygon")}
-              className="w-full flex items-center justify-center gap-2 py-4 bg-blue-600 hover:bg-blue-700 text-white text-base font-semibold rounded-2xl shadow-lg shadow-blue-200 transition-colors"
-            >
-              Jatka julkisivun rajaukseen
-              <ChevronRight className="w-5 h-5" />
-            </button>
-          )}
-
-          {/* Step: polygon — click corners */}
-          {(step === "polygon") && imageDataUrl && (
-            <section className="bg-white rounded-2xl border border-slate-200 p-6 space-y-4 shadow-sm">
-              <div className="flex items-center gap-2">
-                <div
-                  className={`w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold ${
-                    polygon
-                      ? "bg-green-100 text-green-700"
-                      : "bg-blue-600 text-white"
-                  }`}
-                >
-                  {polygon ? <CheckCircle2 className="w-4 h-4" /> : "3"}
-                </div>
-                <h2 className="font-semibold text-slate-800">Rajaa julkisivu</h2>
-              </div>
-              <p className="text-sm text-slate-500">
-                Klikkaa talon nurkat ja harjapiste järjestyksessä. Kaikki myötä- tai
-                vastapäivään — mikä tahansa muoto toimii. Tämä korvaa automaattisen
-                seinäntunnistuksen ja on tarkin tapa mitata.
-              </p>
-              <PolygonSelect
-                imageDataUrl={imageDataUrl}
-                onPolygonSet={handlePolygonSet}
-              />
-              {polygon && (
-                <div className="flex items-center gap-2 p-3 bg-green-50 rounded-xl border border-green-200 text-sm text-green-700">
-                  <CheckCircle2 className="w-4 h-4 shrink-0" />
-                  <span>
-                    Julkisivu rajattu — <strong>{polygon.points.length} nurkkapistettä</strong>
+                    {" — "}{reference.pixelsPerMeter.toFixed(1)} px/m
+                    {Math.abs(reference.angleDeg ?? 0) > 1 && (
+                      <span className="ml-1 text-slate-500">
+                        · kulma {(reference.angleDeg ?? 0).toFixed(1)}°
+                      </span>
+                    )}
                   </span>
                 </div>
               )}
@@ -311,7 +230,7 @@ export default function HomePage() {
           )}
 
           {/* Analyse button */}
-          {step === "polygon" && polygon && (
+          {step === "reference" && reference && (
             <button
               onClick={handleAnalyse}
               className="w-full flex items-center justify-center gap-2 py-4 bg-blue-600 hover:bg-blue-700 text-white text-base font-semibold rounded-2xl shadow-lg shadow-blue-200 transition-colors"
@@ -328,12 +247,10 @@ export default function HomePage() {
                 <Loader2 className="w-8 h-8 text-blue-600 animate-spin" />
               </div>
               <div className="text-center space-y-1">
-                <p className="font-semibold text-slate-800">
-                  Analysoidaan julkisivua...
-                </p>
+                <p className="font-semibold text-slate-800">Analysoidaan julkisivua...</p>
                 <p className="text-sm text-slate-500">
-                  Tekoäly tunnistaa seinät, ikkunat ja ovet sekä luo
-                  syvyyskartan. Tämä kestää noin 20–60 sekuntia.
+                  Tekoäly tunnistaa seinät, ikkunat ja ovet sekä luo syvyyskartan.
+                  Tämä kestää noin 20–60 sekuntia.
                 </p>
               </div>
               <div className="w-full max-w-xs bg-slate-100 rounded-full h-1.5 overflow-hidden">

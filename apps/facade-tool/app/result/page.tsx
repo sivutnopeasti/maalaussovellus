@@ -14,6 +14,7 @@ import {
   ChevronUp,
 } from "lucide-react";
 import SegmentationOverlay from "@/components/SegmentationOverlay";
+import PolygonSelect from "@/components/PolygonSelect";
 import ClickSegment from "@/components/ClickSegment";
 import VanishingPointLine, { type VanishingPoint } from "@/components/VanishingPointLine";
 import ColorPicker from "@/components/ColorPicker";
@@ -25,9 +26,9 @@ import {
   type PreciseMeasurementResult,
 } from "@/lib/measure";
 import { autoClassifyMasks } from "@/lib/autoClassify";
-import type { AnalysisSession, MaskResult, PaintColor } from "@/lib/types";
+import type { AnalysisSession, MaskResult, PaintColor, PolygonData } from "@/lib/types";
 
-type Panel = "segment" | "measure" | "color" | "quote";
+type Panel = "polygon" | "segment" | "measure" | "color" | "quote";
 
 export default function ResultPage() {
   const router = useRouter();
@@ -35,13 +36,17 @@ export default function ResultPage() {
   const [masks, setMasks] = useState<MaskResult[]>([]);
   const [isAutoClassifying, setIsAutoClassifying] = useState(false);
   const [measurement, setMeasurement] = useState<PreciseMeasurementResult | null>(null);
+  const [polygon, setPolygon] = useState<PolygonData | null>(
+    // Restore polygon if session already had one (shouldn't happen anymore, but safe)
+    null,
+  );
   const [vanishingPoint, setVanishingPoint] = useState<VanishingPoint | null>(null);
   const [showVpPanel, setShowVpPanel] = useState(false);
   const [showAnalysisMaps, setShowAnalysisMaps] = useState(false);
   const [selectedColor, setSelectedColor] = useState<PaintColor | null>(null);
   const [customHex, setCustomHex] = useState<string>("#FFFFFF");
   const [visualizedUrl, setVisualizedUrl] = useState<string | null>(null);
-  const [openPanel, setOpenPanel] = useState<Panel>("segment");
+  const [openPanel, setOpenPanel] = useState<Panel>("polygon");
   const [isMeasuring, setIsMeasuring] = useState(false);
   const [isVisualizing, setIsVisualizing] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
@@ -88,10 +93,11 @@ export default function ResultPage() {
     setIsMeasuring(true);
     setError(null);
     try {
-      if (session.polygon && session.polygon.points.length >= 3) {
-        // Polygon-based calculation: Shoelace area minus SAM3 opening areas
+      const activePolygon = polygon ?? session.polygon;
+      if (activePolygon && activePolygon.points.length >= 3) {
+        // Polygon-based calculation: depth-weighted pixel integration minus openings
         const result = await calculatePolygonMeasurement(
-          session.polygon.points,
+          activePolygon.points,
           masks,
           session.imageWidth,
           session.imageHeight,
@@ -194,7 +200,8 @@ export default function ResultPage() {
   const wallCount = masks.filter((m) => m.category === "wall").length;
   const openingCount = masks.filter((m) => m.category === "opening").length;
   // Can calculate if we have a polygon (preferred) OR wall masks (fallback)
-  const hasPolygon = !!(session?.polygon && session.polygon.points.length >= 3);
+  const activePolygon = polygon ?? session?.polygon;
+  const hasPolygon = !!(activePolygon && activePolygon.points.length >= 3);
   const canCalculate = hasPolygon || wallCount > 0;
 
   return (
@@ -260,7 +267,7 @@ export default function ResultPage() {
                       imageHeight={session.imageHeight}
                       isAutoClassifying={isAutoClassifying}
                       onMasksUpdated={handleMasksUpdated}
-                      polygonPoints={session.polygon?.points}
+                      polygonPoints={activePolygon?.points}
                       canvasOnly
                     />
                   </div>
@@ -328,10 +335,52 @@ export default function ResultPage() {
 
             {/* Right — accordion panels */}
             <div className="lg:col-span-2 space-y-3">
-              {/* Panel 1 — Segmentation */}
+
+              {/* Panel 0 — Polygon facade outline */}
+              <AccordionPanel
+                icon={<HexagonIcon />}
+                title="1. Rajaa julkisivu"
+                subtitle={
+                  hasPolygon
+                    ? `${activePolygon!.points.length} pistettä — ${
+                        session.wallMaskUrl ? "automaattisesti tunnistettu" : "manuaalisesti piirretty"
+                      }`
+                    : session.wallMaskUrl
+                      ? "Tekoäly tunnistaa rajat automaattisesti"
+                      : "Klikkaa talon nurkat"
+                }
+                isOpen={openPanel === "polygon"}
+                isDone={hasPolygon}
+                onToggle={() => setOpenPanel(openPanel === "polygon" ? "segment" : "polygon")}
+              >
+                <p className="text-xs text-slate-500 mb-3">
+                  Tekoäly on tunnistanut seinän rajat automaattisesti. Tarkista ja hyväksy,
+                  tai säädä pisteitä tarvittaessa.
+                </p>
+                <PolygonSelect
+                  imageUrl={session.uploadedImageUrl}
+                  imageWidth={session.imageWidth}
+                  imageHeight={session.imageHeight}
+                  onPolygonSet={(data) => {
+                    setPolygon(data);
+                    setOpenPanel("segment");
+                  }}
+                  autoDetectMaskUrl={session.wallMaskUrl}
+                />
+                {hasPolygon && (
+                  <button
+                    onClick={() => setOpenPanel("segment")}
+                    className="w-full mt-3 py-2 bg-blue-600 text-white rounded-xl text-sm font-medium hover:bg-blue-700 transition-colors"
+                  >
+                    Jatka →
+                  </button>
+                )}
+              </AccordionPanel>
+
+              {/* Panel 2 — Segmentation */}
               <AccordionPanel
                 icon={<Layers />}
-                title="1. Luokittele alueet"
+                title="2. Tarkista aukot"
                 subtitle={
                   isAutoClassifying
                     ? "Tekoäly luokittelee automaattisesti..."
@@ -385,10 +434,10 @@ export default function ResultPage() {
                 )}
               </AccordionPanel>
 
-              {/* Panel 2 — Measure */}
+              {/* Panel 3 — Measure */}
               <AccordionPanel
                 icon={<Calculator />}
-                title="2. Laske neliömetrit"
+                title="3. Laske neliömetrit"
                   subtitle={
                     measurement
                       ? `${measurement.wallAreaM2.toFixed(1)} m² — ${
@@ -413,7 +462,7 @@ export default function ResultPage() {
                       <CheckCircle2 className="w-4 h-4 shrink-0 mt-0.5" />
                       <span>
                         <strong>Monikulmio-mittaus:</strong>{" "}
-                        {session.polygon!.points.length} pistettä — tämä on tarkin menetelmä.
+                        {activePolygon!.points.length} pistettä — tarkin menetelmä.
                         Ikkunat ja ovet vähennetään automaattisesti.
                       </span>
                     </div>
@@ -585,10 +634,10 @@ export default function ResultPage() {
                 </div>
               </AccordionPanel>
 
-              {/* Panel 3 — Visualize */}
+              {/* Panel 4 — Visualize */}
               <AccordionPanel
                 icon={<Palette />}
-                title="3. Visualisoi väri"
+                title="4. Visualisoi väri"
                 subtitle={
                   visualizedUrl
                     ? selectedColor?.name ?? "Valmis"
@@ -624,10 +673,10 @@ export default function ResultPage() {
                 </div>
               </AccordionPanel>
 
-              {/* Panel 4 — Quote */}
+              {/* Panel 5 — Quote */}
               <AccordionPanel
                 icon={<Euro />}
-                title="4. Tarjouslaskelma"
+                title="5. Tarjouslaskelma"
                 subtitle="Laske hinta ja tallenna"
                 isOpen={openPanel === "quote"}
                 isDone={false}
@@ -657,6 +706,14 @@ export default function ResultPage() {
 }
 
 // ─── Accordion panel ─────────────────────────────────────────────────────────
+
+function HexagonIcon() {
+  return (
+    <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
+      <polygon points="12 2 20 7 20 17 12 22 4 17 4 7" />
+    </svg>
+  );
+}
 
 function Layers() {
   return (

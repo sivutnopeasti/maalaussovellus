@@ -89,9 +89,13 @@ export async function POST(req: NextRequest) {
         }));
     };
 
+    // The best SAM 3 wall mask is used client-side for automatic corner detection.
+    const wallMaskUrl = sam3WallResult.masks?.[0]?.url ?? null;
+
     return NextResponse.json({
       masks,
       combinedMaskUrl: sam2Result.combined_mask.url,
+      wallMaskUrl,
       wallHints:    toHints(sam3WallResult.boxes,    sam3WallResult.metadata),
       openingHints: toHints(sam3OpeningResult.boxes, sam3OpeningResult.metadata),
       ignoreHints:  toHints(sam3IgnoreResult.boxes,  sam3IgnoreResult.metadata),
