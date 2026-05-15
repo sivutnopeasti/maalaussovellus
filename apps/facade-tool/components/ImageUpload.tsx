@@ -1,12 +1,34 @@
 "use client";
 
 import { useRef, useState, useCallback } from "react";
-import { Upload, ImageIcon, X } from "lucide-react";
+import { Upload, ImageIcon, X, Loader2 } from "lucide-react";
 
 interface Props {
   onImageSelected: (file: File, dataUrl: string) => void;
   previewUrl?: string;
   onClear?: () => void;
+}
+
+const ACCEPTED_TYPES = [
+  "image/jpeg",
+  "image/jpg",
+  "image/png",
+  "image/webp",
+  "image/gif",
+  "image/heic",
+  "image/heif",
+];
+
+function isHeic(file: File): boolean {
+  if (file.type === "image/heic" || file.type === "image/heif") return true;
+  const ext = file.name.split(".").pop()?.toLowerCase();
+  return ext === "heic" || ext === "heif";
+}
+
+function isAccepted(file: File): boolean {
+  if (ACCEPTED_TYPES.includes(file.type)) return true;
+  // Some systems report HEIC with no MIME type — accept by extension
+  return isHeic(file);
 }
 
 export default function ImageUpload({
@@ -16,17 +38,46 @@ export default function ImageUpload({
 }: Props) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [isDragging, setIsDragging] = useState(false);
+  const [isConverting, setIsConverting] = useState(false);
 
   const handleFile = useCallback(
-    (file: File) => {
-      if (!file.type.startsWith("image/")) return;
+    async (file: File) => {
+      if (!isAccepted(file)) return;
+
+      let processedFile = file;
+
+      // HEIC/HEIF needs client-side conversion — browsers can't display it natively
+      if (isHeic(file)) {
+        setIsConverting(true);
+        try {
+          const heic2any = (await import("heic2any")).default;
+          const blob = await heic2any({
+            blob: file,
+            toType: "image/jpeg",
+            quality: 0.92,
+          });
+          const converted = Array.isArray(blob) ? blob[0] : blob;
+          processedFile = new File(
+            [converted],
+            file.name.replace(/\.heic$/i, ".jpg").replace(/\.heif$/i, ".jpg"),
+            { type: "image/jpeg" },
+          );
+        } catch (err) {
+          console.error("HEIC-muunnos epäonnistui:", err);
+          setIsConverting(false);
+          return;
+        } finally {
+          setIsConverting(false);
+        }
+      }
+
       const reader = new FileReader();
       reader.onload = (e) => {
         if (e.target?.result) {
-          onImageSelected(file, e.target.result as string);
+          onImageSelected(processedFile, e.target.result as string);
         }
       };
-      reader.readAsDataURL(file);
+      reader.readAsDataURL(processedFile);
     },
     [onImageSelected],
   );
@@ -71,15 +122,19 @@ export default function ImageUpload({
       }}
       onDragLeave={() => setIsDragging(false)}
       onDrop={handleDrop}
-      onClick={() => inputRef.current?.click()}
+      onClick={() => !isConverting && inputRef.current?.click()}
       className={`flex flex-col items-center justify-center gap-3 border-2 border-dashed rounded-xl p-10 cursor-pointer transition-colors ${
-        isDragging
-          ? "border-blue-500 bg-blue-50"
-          : "border-slate-300 bg-slate-50 hover:border-blue-400 hover:bg-blue-50/50"
+        isConverting
+          ? "border-blue-300 bg-blue-50 cursor-wait"
+          : isDragging
+            ? "border-blue-500 bg-blue-50"
+            : "border-slate-300 bg-slate-50 hover:border-blue-400 hover:bg-blue-50/50"
       }`}
     >
       <div className="p-4 bg-blue-100 rounded-full">
-        {isDragging ? (
+        {isConverting ? (
+          <Loader2 className="w-8 h-8 text-blue-600 animate-spin" />
+        ) : isDragging ? (
           <ImageIcon className="w-8 h-8 text-blue-600" />
         ) : (
           <Upload className="w-8 h-8 text-blue-600" />
@@ -87,16 +142,18 @@ export default function ImageUpload({
       </div>
       <div className="text-center">
         <p className="font-semibold text-slate-700">
-          Raahaa kuva tähän tai klikkaa valitaksesi
+          {isConverting
+            ? "Muunnetaan HEIC → JPEG..."
+            : "Raahaa kuva tähän tai klikkaa valitaksesi"}
         </p>
         <p className="text-sm text-slate-500 mt-1">
-          JPG, PNG, WebP — max 20 Mt
+          JPG, PNG, WebP, <strong>HEIC</strong> (iPhone) — max 20 Mt
         </p>
       </div>
       <input
         ref={inputRef}
         type="file"
-        accept="image/*"
+        accept="image/*,.heic,.heif"
         className="hidden"
         onChange={(e) => {
           const file = e.target.files?.[0];
