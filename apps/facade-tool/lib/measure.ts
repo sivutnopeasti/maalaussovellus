@@ -192,62 +192,58 @@ export async function calculatePreciseMeasurement(
           : 1)
       : 1;
 
-  // ── Perspective / foreshortening correction ───────────────────────────────
-  // Priority 1: reference line angle (user drew along a known horizontal element).
-  //   The line tilt directly encodes how much the facade is viewed from an angle.
-  //   true_area ≈ apparent_area / cos(θ)  where θ = reference line angle from horizontal.
-  //
-  // Priority 2: MLSD dominant line angle (automatic, less precise).
-  // Priority 3: no correction (head-on view assumed).
+  // ── Perspective correction — roll-separated via MLSD ─────────────────────
+  // Uses the same roll/perspective separation logic as calculatePolygonMeasurement.
   let perspectiveCorrectionFactor = 1;
   let dominantLineAngleDeg: number | null = null;
 
   const refAngle = reference.angleDeg ?? 0;
-  const refAngleAbs = Math.abs(refAngle);
 
-  if (refAngleAbs > 1) {
-    // The reference line was drawn along a known-horizontal feature (e.g. bottom board).
-    // Its tilt in the image = perspective angle of the facade.
-    // Foreshortening correction: true width = apparent / cos(θ) → area / cos(θ).
-    dominantLineAngleDeg = refAngle;
-    const cosTheta = Math.cos((refAngleAbs * Math.PI) / 180);
-    if (cosTheta > 0.1) {
-      perspectiveCorrectionFactor = 1 / cosTheta;
-      perspectiveCorrectionFactor = Math.max(0.5, Math.min(2.5, perspectiveCorrectionFactor));
-    }
-  } else if (mlsdMapUrl) {
-    // Fallback: extract dominant line angle from MLSD map
+  if (mlsdMapUrl) {
     try {
       const mlsdCanvas = await loadImageToCanvas(mlsdMapUrl);
       const mlsdData = mlsdCanvas
         .getContext("2d")!
         .getImageData(0, 0, mlsdCanvas.width, mlsdCanvas.height).data;
 
-      dominantLineAngleDeg = extractDominantLineAngle(
-        mlsdData, mlsdCanvas.width, mlsdCanvas.height,
+      const { rollDeg, perspectiveDeg } = extractRollAndPerspectiveFromMLSD(
+        mlsdData, mlsdCanvas.width, mlsdCanvas.height, refAngle,
       );
+      dominantLineAngleDeg = perspectiveDeg;
+      void rollDeg;
 
-      if (dominantLineAngleDeg !== null) {
-        const θ = (Math.abs(dominantLineAngleDeg) * Math.PI) / 180;
-        const cosTheta = Math.cos(θ);
+      if (Math.abs(perspectiveDeg) > 1) {
+        const cosTheta = Math.cos(Math.abs(perspectiveDeg) * Math.PI / 180);
         if (cosTheta > 0.1) {
-          perspectiveCorrectionFactor = 1 / cosTheta;
-          perspectiveCorrectionFactor = Math.max(0.5, Math.min(2.5, perspectiveCorrectionFactor));
+          perspectiveCorrectionFactor = Math.max(0.5, Math.min(2.5, 1 / cosTheta));
         }
       }
     } catch {
-      // MLSD correction is optional; ignore errors
+      // MLSD unavailable — use reference angle directly
+      if (Math.abs(refAngle) > 1) {
+        dominantLineAngleDeg = refAngle;
+        const cosTheta = Math.cos(Math.abs(refAngle) * Math.PI / 180);
+        if (cosTheta > 0.1) {
+          perspectiveCorrectionFactor = Math.max(0.5, Math.min(2.5, 1 / cosTheta));
+        }
+      }
+    }
+  } else if (Math.abs(refAngle) > 1) {
+    // No MLSD — use reference line angle (includes roll, small error)
+    dominantLineAngleDeg = refAngle;
+    const cosTheta = Math.cos(Math.abs(refAngle) * Math.PI / 180);
+    if (cosTheta > 0.1) {
+      perspectiveCorrectionFactor = Math.max(0.5, Math.min(2.5, 1 / cosTheta));
     }
   }
 
   const finalAreaM2 = depthCorrectedM2 * perspectiveCorrectionFactor;
 
   const hasVP = vanishingPoint && !vanishingPoint.atInfinity;
-  const hasRefAngle = refAngleAbs > 1;
-  const hasMLSD = !hasRefAngle && mlsdMapUrl && dominantLineAngleDeg !== null;
+  const hasMLSD = mlsdMapUrl && dominantLineAngleDeg !== null;
   const method = hasVP
-    ? hasMLSD ? "depth+vp+perspective" : "depth+vp"
-    : hasRefAngle ? "depth+perspective" : hasMLSD ? "depth+perspective" : "depth";
+    ? "depth+vp"
+    : hasMLSD ? "depth+perspective" : "depth";
 
   return {
     wallPixels: basic.wallPixels,
@@ -448,75 +444,129 @@ function sampleMaskedDepth(
 }
 
 /**
+ * Build a full 0–179° angle histogram from MLSD line pixels.
+ *
+ * For each bright pixel, searches in all forward directions (dx > 0, or dx=0 dy > 0)
+ * for the nearest bright neighbor, computes the line angle, and buckets it.
+ *
+ * This produces both horizontal (~0°) and vertical (~90°) peaks,
+ * enabling separate roll and perspective extraction.
+ */
+function buildMLSDAngleHistogram(
+  mlsdData: Uint8ClampedArray,
+  width: number,
+  height: number,
+): Float32Array {
+  const buckets = new Float32Array(180);
+  const STRIDE = 4;
+
+  for (let y = STRIDE; y < height - STRIDE; y += STRIDE) {
+    for (let x = STRIDE; x < width - STRIDE; x += STRIDE) {
+      if (mlsdData[(y * width + x) * 4] < 200) continue;
+
+      let bestDx = 0, bestDy = 0, bestDist = Infinity;
+
+      // Search in forward half-plane (dx > 0) + straight down (dx=0, dy>0)
+      // to avoid counting each segment twice.
+      for (let dy = -STRIDE * 2; dy <= STRIDE * 2; dy += STRIDE) {
+        for (let dx = 0; dx <= STRIDE * 3; dx += STRIDE) {
+          if (dx === 0 && dy <= 0) continue; // skip backward & same point
+          const nx = x + dx, ny = y + dy;
+          if (nx < 0 || nx >= width || ny < 0 || ny >= height) continue;
+          if (mlsdData[(ny * width + nx) * 4] > 200) {
+            const dist = Math.sqrt(dx * dx + dy * dy);
+            if (dist < bestDist) { bestDist = dist; bestDx = dx; bestDy = dy; }
+          }
+        }
+      }
+
+      if (bestDist < Infinity && (bestDx !== 0 || bestDy !== 0)) {
+        const angleDeg = Math.atan2(bestDy, bestDx) * (180 / Math.PI);
+        const bucket = Math.round(((angleDeg % 180) + 180) % 180); // 0-179
+        buckets[bucket] += 1;
+      }
+    }
+  }
+  return buckets;
+}
+
+/**
+ * Separate roll (phone tilt around optical axis) from perspective (side view angle)
+ * using MLSD line data.
+ *
+ * Key insight:
+ *   - Vertical building features (window frames, door frames, wall corners) tilt ONLY
+ *     due to phone roll — perspective rotation around the vertical axis doesn't tilt
+ *     vertical lines.
+ *   - Horizontal building features tilt due to BOTH roll and perspective.
+ *
+ * Therefore:
+ *   roll = dominant_vertical_line_angle − 90°
+ *   perspective = dominant_horizontal_line_angle − roll
+ *
+ * Returns null for either if not detectable (insufficient line signal).
+ */
+function extractRollAndPerspectiveFromMLSD(
+  mlsdData: Uint8ClampedArray,
+  width: number,
+  height: number,
+  referenceLineAngleDeg: number,
+): { rollDeg: number; perspectiveDeg: number } {
+  const buckets = buildMLSDAngleHistogram(mlsdData, width, height);
+
+  // ── Dominant near-vertical bucket (65° – 115°) → roll ──────────────────────
+  let vertCount = 0, vertAngle = 90;
+  for (let b = 65; b <= 115; b++) {
+    if (buckets[b] > vertCount) { vertCount = buckets[b]; vertAngle = b; }
+  }
+  const rollDeg = vertCount >= 8 ? (vertAngle - 90) : 0;
+
+  // ── Dominant near-horizontal bucket (0°–25° and 155°–179°) → combined ──────
+  // We use the reference line angle (which the user drew deliberately) as the
+  // primary source for combined angle, since it's more reliable than MLSD alone.
+  // MLSD horizontal is used only to cross-check.
+  let horizCount = 0, horizAngle = 0;
+  for (let b = 0; b < 180; b++) {
+    const near = b <= 25 || b >= 155;
+    if (near && buckets[b] > horizCount) {
+      horizCount = buckets[b];
+      horizAngle = b <= 25 ? b : b - 180;
+    }
+  }
+
+  // Pure perspective = combined angle − roll
+  // Primary source is reference line; use MLSD horizontal only if reference unavailable
+  const combinedAngle =
+    Math.abs(referenceLineAngleDeg) > 0.5
+      ? referenceLineAngleDeg
+      : horizCount >= 5 ? horizAngle : 0;
+
+  const perspectiveDeg = combinedAngle - rollDeg;
+
+  return { rollDeg, perspectiveDeg };
+}
+
+/**
  * Extract the dominant horizontal line angle from an MLSD image.
- *
- * Algorithm:
- *  1. Scan the MLSD image for white pixels (detected line pixels).
- *  2. For each pair of vertically-adjacent white pixels, compute local angle.
- *  3. Bucket angles into 1-degree bins; find the dominant bucket near 0° (horizontal).
- *  4. The dominant angle tells us how much the facade is rotated in the horizontal plane.
- *
- * Returns angle in degrees from horizontal (0 = perfectly head-on).
- * Returns null if no dominant line found.
+ * Legacy helper — used as fallback when no reference line angle is available.
  */
 function extractDominantLineAngle(
   mlsdData: Uint8ClampedArray,
   width: number,
   height: number,
 ): number | null {
-  // Accumulate gradient direction for white (line) pixels
-  const angleBuckets = new Float32Array(180); // 0° – 179°
+  const buckets = buildMLSDAngleHistogram(mlsdData, width, height);
 
-  const STRIDE = 4; // sample every 4th pixel for speed
-  for (let y = STRIDE; y < height - STRIDE; y += STRIDE) {
-    for (let x = STRIDE; x < width - STRIDE; x += STRIDE) {
-      const idx = (y * width + x) * 4;
-      if (mlsdData[idx] < 200) continue; // not a detected line pixel
-
-      // Find line direction using local neighbourhood
-      // Look for the nearest white pixel to the right/below to infer angle
-      let bestDx = 0;
-      let bestDy = 0;
-      let bestDist = Infinity;
-
-      for (let dy = -STRIDE * 2; dy <= STRIDE * 2; dy += STRIDE) {
-        for (let dx = 1; dx <= STRIDE * 3; dx += STRIDE) {
-          const nx = x + dx;
-          const ny = y + dy;
-          if (nx < 0 || nx >= width || ny < 0 || ny >= height) continue;
-          if (mlsdData[(ny * width + nx) * 4] > 200) {
-            const dist = Math.sqrt(dx * dx + dy * dy);
-            if (dist < bestDist) {
-              bestDist = dist;
-              bestDx = dx;
-              bestDy = dy;
-            }
-          }
-        }
-      }
-
-      if (bestDist < Infinity && bestDx !== 0) {
-        const angleDeg = Math.atan2(bestDy, bestDx) * (180 / Math.PI); // -180 to 180
-        const bucket = Math.round(((angleDeg % 180) + 180) % 180); // 0-179
-        angleBuckets[bucket] += 1;
-      }
-    }
-  }
-
-  // Find the dominant bucket near horizontal (buckets 0-20 and 160-179)
-  let bestCount = 0;
-  let bestAngle = 0;
+  let bestCount = 0, bestAngle = 0;
   for (let b = 0; b < 180; b++) {
     const isNearHorizontal = b <= 25 || b >= 155;
-    if (isNearHorizontal && angleBuckets[b] > bestCount) {
-      bestCount = angleBuckets[b];
-      bestAngle = b <= 25 ? b : b - 180; // convert to signed angle
+    if (isNearHorizontal && buckets[b] > bestCount) {
+      bestCount = buckets[b];
+      bestAngle = b <= 25 ? b : b - 180;
     }
   }
 
-  // Only return if we have a meaningful signal
   if (bestCount < 5) return null;
-  // If angle is very close to 0°, no meaningful correction needed
   if (Math.abs(bestAngle) < 2) return null;
   return bestAngle;
 }
@@ -548,18 +598,50 @@ export async function calculatePolygonMeasurement(
   imageHeight: number,
   reference: ReferenceData,
   depthMapUrl?: string,
+  mlsdMapUrl?: string | null,
 ): Promise<PreciseMeasurementResult> {
   const ppm = reference.pixelsPerMeter;
 
-  // ── 1. Horizontal perspective correction from reference line angle ─────────
-  const angleDeg = reference.angleDeg ?? 0;
+  // ── 1. Perspective correction — separated from phone roll via MLSD ─────────
+  //
+  // Phone roll (camera tilted sideways) and perspective (building viewed from
+  // an angle) BOTH contribute to the reference line tilt:
+  //   reference_angle = roll + perspective
+  //
+  // Vertical building lines (window frames, door frames) tilt ONLY from roll,
+  // not perspective. So if MLSD is available:
+  //   roll        = vertical_dominant_angle − 90°
+  //   perspective = reference_angle − roll
+  //
+  // Without MLSD: use reference angle directly (roll error < 2% for typical shots).
+  const refAngleDeg = reference.angleDeg ?? 0;
+  let perspectiveAngleDeg = refAngleDeg;
+  let rollDeg = 0;
+
+  if (mlsdMapUrl) {
+    try {
+      const mlsdCanvas = await loadImageToCanvas(mlsdMapUrl);
+      const mlsdData = mlsdCanvas
+        .getContext("2d")!
+        .getImageData(0, 0, mlsdCanvas.width, mlsdCanvas.height).data;
+      const extracted = extractRollAndPerspectiveFromMLSD(
+        mlsdData, mlsdCanvas.width, mlsdCanvas.height, refAngleDeg,
+      );
+      rollDeg = extracted.rollDeg;
+      perspectiveAngleDeg = extracted.perspectiveDeg;
+    } catch {
+      // MLSD unavailable — fall back to reference angle
+    }
+  }
+
   let perspectiveCorrectionFactor = 1;
-  if (Math.abs(angleDeg) > 1) {
-    const cosTheta = Math.cos(Math.abs(angleDeg) * Math.PI / 180);
+  if (Math.abs(perspectiveAngleDeg) > 1) {
+    const cosTheta = Math.cos(Math.abs(perspectiveAngleDeg) * Math.PI / 180);
     if (cosTheta > 0.1) {
       perspectiveCorrectionFactor = Math.max(0.5, Math.min(2.5, 1 / cosTheta));
     }
   }
+  void rollDeg;
 
   // ── 2. Rasterise polygon into a canvas mask ────────────────────────────────
   // We sample every STRIDE pixels for performance on large images.

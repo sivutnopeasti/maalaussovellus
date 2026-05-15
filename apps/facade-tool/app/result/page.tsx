@@ -102,7 +102,8 @@ export default function ResultPage() {
           session.imageWidth,
           session.imageHeight,
           session.reference,
-          session.depthMapUrl,  // enables vertical perspective correction
+          session.depthMapUrl,    // vertical perspective (camera tilt)
+          session.mlsdMapUrl,     // roll separation (phone tilt)
         );
         setMeasurement(result);
       } else {
