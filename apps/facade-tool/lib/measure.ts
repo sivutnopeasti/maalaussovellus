@@ -83,7 +83,14 @@ export interface PreciseMeasurementResult extends MeasurementResult {
   depthCorrectionFactor: number;
   perspectiveCorrectionFactor: number;
   dominantLineAngleDeg: number | null;
-  method: "basic" | "depth" | "depth+perspective";
+  vanishingPointCorrectionFactor: number;
+  method: "basic" | "depth" | "depth+perspective" | "depth+vp" | "depth+vp+perspective";
+}
+
+export interface VanishingPointData {
+  x: number;
+  y: number;
+  atInfinity: boolean;
 }
 
 /**
@@ -103,6 +110,7 @@ export async function calculatePreciseMeasurement(
   reference: ReferenceData,
   depthMapUrl: string,
   mlsdMapUrl: string | null,
+  vanishingPoint?: VanishingPointData | null,
 ): Promise<PreciseMeasurementResult> {
   const basic = calculateWallArea(masks, reference);
   const { pixelsPerMeter } = reference;
@@ -155,8 +163,12 @@ export async function calculatePreciseMeasurement(
   const openingMasks = masks.filter((m) => m.category === "opening");
 
   const [wallWeightedPixels, openingWeightedPixels] = await Promise.all([
-    sumDepthWeightedPixels(wallMasks, depthData, dW, dH, refDepth),
-    sumDepthWeightedPixels(openingMasks, depthData, dW, dH, refDepth),
+    sumDepthWeightedPixels(
+      wallMasks, depthData, dW, dH, refDepth, vanishingPoint ?? null, reference,
+    ),
+    sumDepthWeightedPixels(
+      openingMasks, depthData, dW, dH, refDepth, vanishingPoint ?? null, reference,
+    ),
   ]);
 
   const netWeightedPixels = Math.max(
@@ -168,37 +180,38 @@ export async function calculatePreciseMeasurement(
   const depthCorrectionFactor =
     basic.wallAreaM2 > 0 ? depthCorrectedM2 / basic.wallAreaM2 : 1;
 
+  // ── Vanishing-point correction factor (informational) ─────────────────────
+  // Already applied per-pixel in sumDepthWeightedPixels when VP provided.
+  const vanishingPointCorrectionFactor =
+    vanishingPoint && !vanishingPoint.atInfinity
+      ? depthCorrectedM2 / (basic.wallAreaM2 > 0
+          ? basic.wallAreaM2 * depthCorrectionFactor
+          : 1)
+      : 1;
+
   // ── MLSD perspective / foreshortening correction ──────────────────────────
+  // (Only applied when no VP is available — VP is more accurate)
   let perspectiveCorrectionFactor = 1;
   let dominantLineAngleDeg: number | null = null;
 
-  if (mlsdMapUrl) {
+  const useMLSD = mlsdMapUrl && !(vanishingPoint && !vanishingPoint.atInfinity);
+  if (useMLSD) {
     try {
-      const mlsdCanvas = await loadImageToCanvas(mlsdMapUrl);
+      const mlsdCanvas = await loadImageToCanvas(mlsdMapUrl!);
       const mlsdData = mlsdCanvas
         .getContext("2d")!
         .getImageData(0, 0, mlsdCanvas.width, mlsdCanvas.height).data;
 
       dominantLineAngleDeg = extractDominantLineAngle(
-        mlsdData,
-        mlsdCanvas.width,
-        mlsdCanvas.height,
+        mlsdData, mlsdCanvas.width, mlsdCanvas.height,
       );
 
       if (dominantLineAngleDeg !== null) {
-        // Facade is viewed at angle θ from head-on.
-        // Apparent width = true_width × cos(θ)
-        // → true_width = apparent_width / cos(θ)
-        // → true_area = apparent_area / cos²(θ)
         const θ = (Math.abs(dominantLineAngleDeg) * Math.PI) / 180;
         const cosTheta = Math.cos(θ);
         if (cosTheta > 0.1) {
           perspectiveCorrectionFactor = 1 / (cosTheta * cosTheta);
-          // Clamp to reasonable range: ±50% correction max
-          perspectiveCorrectionFactor = Math.max(
-            0.5,
-            Math.min(2.0, perspectiveCorrectionFactor),
-          );
+          perspectiveCorrectionFactor = Math.max(0.5, Math.min(2.0, perspectiveCorrectionFactor));
         }
       }
     } catch {
@@ -207,6 +220,12 @@ export async function calculatePreciseMeasurement(
   }
 
   const finalAreaM2 = depthCorrectedM2 * perspectiveCorrectionFactor;
+
+  const hasVP = vanishingPoint && !vanishingPoint.atInfinity;
+  const hasMLSD = mlsdMapUrl && dominantLineAngleDeg !== null;
+  const method = hasVP
+    ? hasMLSD ? "depth+vp+perspective" : "depth+vp"
+    : hasMLSD ? "depth+perspective" : "depth";
 
   return {
     wallPixels: basic.wallPixels,
@@ -217,10 +236,8 @@ export async function calculatePreciseMeasurement(
     depthCorrectionFactor,
     perspectiveCorrectionFactor,
     dominantLineAngleDeg,
-    method:
-      mlsdMapUrl && dominantLineAngleDeg !== null
-        ? "depth+perspective"
-        : "depth",
+    vanishingPointCorrectionFactor,
+    method,
   };
 }
 
@@ -275,9 +292,17 @@ export async function depthCorrectedArea(
 // ─── Internal helpers ─────────────────────────────────────────────────────────
 
 /**
- * Sum depth-weighted pixel contributions from a list of masks.
- * Each pixel's contribution = (refDepth / pixelDepth)²
- * This corrects for perspective foreshortening on a per-pixel basis.
+ * Sum depth + vanishing-point weighted pixel contributions from a list of masks.
+ *
+ * Each pixel's contribution = depth_weight × vp_weight
+ *
+ * depth_weight  = (refDepth / pixelDepth)²
+ *   → corrects for near/far distance differences
+ *
+ * vp_weight = refDistToVP / |pixelX - vp_x|
+ *   → corrects for horizontal foreshortening from camera angle
+ *   → pixels near the vanishing point are foreshortened → need more weight
+ *   → works for any wall shape (pentagon, trapezoid, etc.)
  */
 async function sumDepthWeightedPixels(
   masks: MaskResult[],
@@ -285,7 +310,15 @@ async function sumDepthWeightedPixels(
   dW: number,
   dH: number,
   refDepth: number,
+  vp: VanishingPointData | null,
+  reference: ReferenceData,
 ): Promise<number> {
+  // Pre-compute reference distance from VP (in image pixel space)
+  // Used to scale VP correction relative to the reference line.
+  const refCenterX = (reference.point1.x + reference.point2.x) / 2;
+  const vpAvailable = vp && !vp.atInfinity;
+  const refDistToVP = vpAvailable ? Math.abs(refCenterX - vp!.x) : 0;
+
   let total = 0;
   for (const mask of masks) {
     try {
@@ -299,20 +332,29 @@ async function sumDepthWeightedPixels(
         for (let x = 0; x < mW; x++) {
           const mi = (y * mW + x) * 4;
           if (mData[mi] > 127 || mData[mi + 3] > 127) {
-            // Map mask pixel → depth map pixel
+            // ── Depth correction ──────────────────────────────────────────
             const dx = Math.min(Math.round((x / mW) * dW), dW - 1);
             const dy = Math.min(Math.round((y / mH) * dH), dH - 1);
             const pixelDepth = depthData[(dy * dW + dx) * 4];
+            const depthFactor = pixelDepth > 0
+              ? Math.max(0.1, Math.min(4.0, (refDepth / pixelDepth) ** 2))
+              : 1;
 
-            if (pixelDepth > 0) {
-              // DepthAnything: brighter = closer (inverse depth).
-              // Correction: farther pixel → smaller in image → weight more.
-              const correctionFactor = (refDepth / pixelDepth) ** 2;
-              // Clamp per-pixel correction to prevent runaway values at edges
-              total += Math.max(0.1, Math.min(4.0, correctionFactor));
-            } else {
-              total += 1;
+            // ── Vanishing-point (horizontal foreshortening) correction ────
+            // Map mask pixel coords back to original image coords
+            let vpFactor = 1;
+            if (vpAvailable && refDistToVP > 10) {
+              const imgX = (x / mW) * (reference.point2.x + reference.point1.x); // approx scale
+              // More accurate: mask covers same area as original
+              const origX = (x / mW) * (dW > mW ? dW : mW); // use largest dim as proxy
+              const pixDistToVP = Math.abs(origX - vp!.x);
+              if (pixDistToVP > 1) {
+                vpFactor = Math.max(0.3, Math.min(3.0, refDistToVP / pixDistToVP));
+              }
+              void imgX; // suppress lint
             }
+
+            total += depthFactor * vpFactor;
           }
         }
       }

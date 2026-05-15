@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 import SegmentationOverlay from "@/components/SegmentationOverlay";
 import ClickSegment from "@/components/ClickSegment";
+import VanishingPointLine, { type VanishingPoint } from "@/components/VanishingPointLine";
 import ColorPicker from "@/components/ColorPicker";
 import QuoteForm from "@/components/QuoteForm";
 import {
@@ -33,6 +34,8 @@ export default function ResultPage() {
   const [masks, setMasks] = useState<MaskResult[]>([]);
   const [isAutoClassifying, setIsAutoClassifying] = useState(false);
   const [measurement, setMeasurement] = useState<PreciseMeasurementResult | null>(null);
+  const [vanishingPoint, setVanishingPoint] = useState<VanishingPoint | null>(null);
+  const [showVpPanel, setShowVpPanel] = useState(false);
   const [showAnalysisMaps, setShowAnalysisMaps] = useState(false);
   const [selectedColor, setSelectedColor] = useState<PaintColor | null>(null);
   const [customHex, setCustomHex] = useState<string>("#FFFFFF");
@@ -92,6 +95,7 @@ export default function ResultPage() {
         session.reference,
         session.depthMapUrl,
         session.mlsdMapUrl ?? null,
+        vanishingPoint,
       );
       setMeasurement(result);
       setOpenPanel("color");
@@ -412,7 +416,39 @@ export default function ResultPage() {
                     </div>
                   </div>
 
-                  {/* Analysis maps toggle */}
+                  {/* Vanishing point — perspective correction */}
+                  <div className="border border-amber-200 rounded-xl overflow-hidden">
+                    <button
+                      onClick={() => setShowVpPanel((v) => !v)}
+                      className="w-full flex items-center justify-between px-3 py-2 bg-amber-50 hover:bg-amber-100 transition-colors text-xs font-medium text-amber-800"
+                    >
+                      <span className="flex items-center gap-1.5">
+                        <span>Perspektiivikorjaus (valinnainen)</span>
+                        {vanishingPoint && !vanishingPoint.atInfinity && (
+                          <span className="px-1.5 py-0.5 bg-amber-200 text-amber-800 rounded text-xs">✓ asetettu</span>
+                        )}
+                      </span>
+                      {showVpPanel ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+                    </button>
+                    {showVpPanel && (
+                      <div className="p-3">
+                        <p className="text-xs text-slate-500 mb-2">
+                          Piirrä toinen vaakalinja rakennuksessa (ikkunalauta, lauta, räystäs).
+                          Järjestelmä laskee katoavan pisteen perspektiivikorjaukseksi.
+                          Toimii myös harjakattoisissa taloissa.
+                        </p>
+                        <VanishingPointLine
+                          imageUrl={session.uploadedImageUrl}
+                          imageWidth={session.imageWidth}
+                          imageHeight={session.imageHeight}
+                          reference={session.reference}
+                          onVanishingPointSet={setVanishingPoint}
+                        />
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Analysis maps (depth/MLSD/Canny) */}
                   {(session.depthMapUrl || session.mlsdMapUrl || session.cannyMapUrl) && (
                     <button
                       onClick={() => setShowAnalysisMaps((v) => !v)}
@@ -481,9 +517,15 @@ export default function ResultPage() {
                           <span>Syvyyskorjaus</span>
                           <span>{measurement.depthCorrectionFactor.toFixed(3)}×</span>
                         </div>
+                        {measurement.vanishingPointCorrectionFactor !== 1 && (
+                          <div className="flex justify-between text-amber-600">
+                            <span>Katoavapiste-korjaus</span>
+                            <span>{measurement.vanishingPointCorrectionFactor.toFixed(3)}×</span>
+                          </div>
+                        )}
                         {measurement.perspectiveCorrectionFactor !== 1 && (
                           <div className="flex justify-between">
-                            <span>Perspektiivikorjaus</span>
+                            <span>MLSD-korjaus</span>
                             <span>{measurement.perspectiveCorrectionFactor.toFixed(3)}×
                               {measurement.dominantLineAngleDeg !== null && (
                                 <span className="text-slate-400"> ({measurement.dominantLineAngleDeg.toFixed(1)}°)</span>
