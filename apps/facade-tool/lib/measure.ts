@@ -191,15 +191,33 @@ export async function calculatePreciseMeasurement(
           : 1)
       : 1;
 
-  // ── MLSD perspective / foreshortening correction ──────────────────────────
-  // (Only applied when no VP is available — VP is more accurate)
+  // ── Perspective / foreshortening correction ───────────────────────────────
+  // Priority 1: reference line angle (user drew along a known horizontal element).
+  //   The line tilt directly encodes how much the facade is viewed from an angle.
+  //   true_area ≈ apparent_area / cos(θ)  where θ = reference line angle from horizontal.
+  //
+  // Priority 2: MLSD dominant line angle (automatic, less precise).
+  // Priority 3: no correction (head-on view assumed).
   let perspectiveCorrectionFactor = 1;
   let dominantLineAngleDeg: number | null = null;
 
-  const useMLSD = mlsdMapUrl && !(vanishingPoint && !vanishingPoint.atInfinity);
-  if (useMLSD) {
+  const refAngle = reference.angleDeg ?? 0;
+  const refAngleAbs = Math.abs(refAngle);
+
+  if (refAngleAbs > 1) {
+    // The reference line was drawn along a known-horizontal feature (e.g. bottom board).
+    // Its tilt in the image = perspective angle of the facade.
+    // Foreshortening correction: true width = apparent / cos(θ) → area / cos(θ).
+    dominantLineAngleDeg = refAngle;
+    const cosTheta = Math.cos((refAngleAbs * Math.PI) / 180);
+    if (cosTheta > 0.1) {
+      perspectiveCorrectionFactor = 1 / cosTheta;
+      perspectiveCorrectionFactor = Math.max(0.5, Math.min(2.5, perspectiveCorrectionFactor));
+    }
+  } else if (mlsdMapUrl) {
+    // Fallback: extract dominant line angle from MLSD map
     try {
-      const mlsdCanvas = await loadImageToCanvas(mlsdMapUrl!);
+      const mlsdCanvas = await loadImageToCanvas(mlsdMapUrl);
       const mlsdData = mlsdCanvas
         .getContext("2d")!
         .getImageData(0, 0, mlsdCanvas.width, mlsdCanvas.height).data;
@@ -212,8 +230,8 @@ export async function calculatePreciseMeasurement(
         const θ = (Math.abs(dominantLineAngleDeg) * Math.PI) / 180;
         const cosTheta = Math.cos(θ);
         if (cosTheta > 0.1) {
-          perspectiveCorrectionFactor = 1 / (cosTheta * cosTheta);
-          perspectiveCorrectionFactor = Math.max(0.5, Math.min(2.0, perspectiveCorrectionFactor));
+          perspectiveCorrectionFactor = 1 / cosTheta;
+          perspectiveCorrectionFactor = Math.max(0.5, Math.min(2.5, perspectiveCorrectionFactor));
         }
       }
     } catch {
@@ -224,10 +242,11 @@ export async function calculatePreciseMeasurement(
   const finalAreaM2 = depthCorrectedM2 * perspectiveCorrectionFactor;
 
   const hasVP = vanishingPoint && !vanishingPoint.atInfinity;
-  const hasMLSD = mlsdMapUrl && dominantLineAngleDeg !== null;
+  const hasRefAngle = refAngleAbs > 1;
+  const hasMLSD = !hasRefAngle && mlsdMapUrl && dominantLineAngleDeg !== null;
   const method = hasVP
     ? hasMLSD ? "depth+vp+perspective" : "depth+vp"
-    : hasMLSD ? "depth+perspective" : "depth";
+    : hasRefAngle ? "depth+perspective" : hasMLSD ? "depth+perspective" : "depth";
 
   return {
     wallPixels: basic.wallPixels,

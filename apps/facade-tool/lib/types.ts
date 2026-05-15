@@ -9,6 +9,13 @@ export interface ReferenceData {
   meters: number;
   pixelsPerMeter: number;
   pixelDistance: number;
+  /**
+   * Angle of the reference line from horizontal, in degrees.
+   * Positive = line tilts up to the right (right side higher in image).
+   * A non-zero value means the facade is viewed from an angle — used for
+   * perspective foreshortening correction without any extra manual input.
+   */
+  angleDeg: number;
 }
 
 export type MaskCategory = "wall" | "opening" | "ignored";

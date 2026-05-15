@@ -112,12 +112,18 @@ export default function ReferenceMeasure({ imageDataUrl, onReferenceSet }: Props
     const dy = points[1].y - points[0].y;
     const pixelDist = Math.sqrt(dx * dx + dy * dy);
     const pixelsPerMeter = pixelDist / m;
+    // The angle from horizontal tells us how much the facade is viewed from an angle.
+    // A perfectly horizontal reference line means head-on view (no foreshortening).
+    // A tilted line (e.g. drawn along a board on an angled facade) gives the
+    // perspective correction factor automatically — no separate vanishing-point step needed.
+    const angleDeg = Math.atan2(dy, dx) * (180 / Math.PI);
     onReferenceSet({
       point1: points[0],
       point2: points[1],
       meters: m,
       pixelsPerMeter,
       pixelDistance: pixelDist,
+      angleDeg,
     });
   };
 
@@ -129,26 +135,47 @@ export default function ReferenceMeasure({ imageDataUrl, onReferenceSet }: Props
 
   return (
     <div className="space-y-3">
-      <div className="flex items-center gap-2 text-sm text-slate-600">
-        <Ruler className="w-4 h-4 text-blue-600" />
-        {phase === "idle" && (
-          <span>Klikkaa &quot;Aloita mittaus&quot; ja merkitse tunnettu mitta kuvaan.</span>
-        )}
-        {phase === "point1" && (
-          <span className="font-medium text-blue-600">
-            Klikkaa ensimmäinen piste kuvaan (esim. seinän vasen reuna).
-          </span>
-        )}
-        {phase === "point2" && (
-          <span className="font-medium text-blue-600">
-            Klikkaa toinen piste (esim. seinän oikea reuna).
-          </span>
-        )}
-        {phase === "input" && (
-          <span className="font-medium text-green-600">
-            Syötä mitattu etäisyys metreissä.
-          </span>
-        )}
+      <div className="flex flex-col gap-1 text-sm text-slate-600">
+        <div className="flex items-start gap-2">
+          <Ruler className="w-4 h-4 text-blue-600 mt-0.5 shrink-0" />
+          {phase === "idle" && (
+            <span>
+              Klikkaa &quot;Aloita mittaus&quot; ja piirrä viiva pitkin talon
+              alinta lautaa tai muuta <strong>vaakasuoraa</strong> rakennetta.
+              Viiva antaa samalla sekä mittakaavan että perspektiivikorjauksen.
+            </span>
+          )}
+          {phase === "point1" && (
+            <span className="font-medium text-blue-600">
+              Klikkaa viivan <strong>alkupiste</strong> — esim. alimman laudan vasen pää.
+            </span>
+          )}
+          {phase === "point2" && (
+            <span className="font-medium text-blue-600">
+              Klikkaa viivan <strong>loppupiste</strong> — saman laudan oikea pää.
+              Piirrä viiva tarkasti lauta pitkin, jotta perspektiivi korjautuu oikein.
+            </span>
+          )}
+          {phase === "input" && (
+            <span className="font-medium text-green-600">
+              Syötä laudan todellinen pituus metreissä.
+            </span>
+          )}
+        </div>
+        {phase === "input" && points.length === 2 && (() => {
+          const dx = points[1].x - points[0].x;
+          const dy = points[1].y - points[0].y;
+          const angleDeg = Math.atan2(dy, dx) * (180 / Math.PI);
+          const absAngle = Math.abs(angleDeg);
+          if (absAngle < 1) return (
+            <p className="text-xs text-slate-400 pl-6">Viiva on lähes vaakasuora — julkisivu kuvattu suoraan edestä.</p>
+          );
+          return (
+            <p className="text-xs text-slate-400 pl-6">
+              Viivan kulma: {angleDeg.toFixed(1)}° — perspektiivikorjaus lasketaan automaattisesti.
+            </p>
+          );
+        })()}
       </div>
 
       <div className="relative rounded-xl overflow-hidden border-2 border-slate-200 bg-slate-900">
