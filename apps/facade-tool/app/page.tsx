@@ -77,7 +77,6 @@ export default function HomePage() {
 
       const session: AnalysisSession = {
         uploadedImageUrl,
-        imageDataUrl,
         imageWidth: imageDimensions.w,
         imageHeight: imageDimensions.h,
         reference,

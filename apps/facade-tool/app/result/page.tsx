@@ -227,7 +227,7 @@ export default function ResultPage() {
                 </div>
                 {/* eslint-disable-next-line @next/next/no-img-element */}
                 <img
-                  src={session.imageDataUrl}
+                  src={session.uploadedImageUrl}
                   alt="Alkuperäinen julkisivu"
                   className="w-full"
                 />
@@ -275,7 +275,7 @@ export default function ResultPage() {
               >
                 <SegmentationOverlay
                   masks={masks}
-                  originalImageUrl={session.imageDataUrl}
+                  originalImageUrl={session.uploadedImageUrl}
                   imageWidth={session.imageWidth}
                   imageHeight={session.imageHeight}
                   onMasksUpdated={handleMasksUpdated}

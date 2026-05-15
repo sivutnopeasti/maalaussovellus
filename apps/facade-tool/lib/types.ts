@@ -23,10 +23,8 @@ export interface MaskResult {
 }
 
 export interface AnalysisSession {
-  /** URL in fal.ai storage — passed to AI models */
+  /** URL in fal.ai storage — passed to AI models and used for display */
   uploadedImageUrl: string;
-  /** Base64 data URL for client-side rendering */
-  imageDataUrl: string;
   imageWidth: number;
   imageHeight: number;
   reference: ReferenceData;
