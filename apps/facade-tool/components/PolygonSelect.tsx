@@ -2,19 +2,27 @@
 
 import { useRef, useEffect, useState, useCallback } from "react";
 import { Hexagon, RotateCcw, Check, Undo2, Wand2, Loader2 } from "lucide-react";
-import type { Point, PolygonData } from "@/lib/types";
+import type { Point, PolygonData, ReferenceData } from "@/lib/types";
 import { detectFacadeCorners } from "@/lib/cornerDetect";
 
 interface Props {
-  /** Image URL — accepts both data: URLs and https:// CDN URLs. */
   imageUrl: string;
   imageWidth: number;
   imageHeight: number;
   onPolygonSet: (data: PolygonData) => void;
-  /** SAM 3 wall mask URL — when provided, auto-detects corners on mount. */
   autoDetectMaskUrl?: string | null;
-  /** Pixels per meter from reference line — used to display segment lengths. */
-  pixelsPerMeter?: number;
+  /** Reference data — provides pixelsPerMeter and line position for depth sampling. */
+  reference?: ReferenceData;
+  /** Depth map URL — enables per-segment depth-corrected length display. */
+  depthMapUrl?: string;
+}
+
+/** Cached depth map data for synchronous per-pixel sampling in redraw. */
+interface DepthCache {
+  data: Uint8ClampedArray;
+  width: number;
+  height: number;
+  refDepth: number;
 }
 
 type Phase = "idle" | "detecting" | "review" | "drawing" | "done";
@@ -25,17 +33,20 @@ export default function PolygonSelect({
   imageHeight,
   onPolygonSet,
   autoDetectMaskUrl,
-  pixelsPerMeter,
+  reference,
+  depthMapUrl,
 }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const imageRef = useRef<HTMLImageElement | null>(null);
+  const depthRef = useRef<DepthCache | null>(null);
   const [points, setPoints] = useState<Point[]>([]);
   const [canvasSize, setCanvasSize] = useState({ w: 0, h: 0 });
   const [scale, setScale] = useState(1);
   const [phase, setPhase] = useState<Phase>(autoDetectMaskUrl ? "detecting" : "idle");
   const [detectError, setDetectError] = useState<string | null>(null);
+  const [depthReady, setDepthReady] = useState(false);
 
-  // Load image into canvas
+  // Load main image
   useEffect(() => {
     const img = new Image();
     img.crossOrigin = "anonymous";
@@ -49,6 +60,43 @@ export default function PolygonSelect({
     };
     img.src = imageUrl;
   }, [imageUrl]);
+
+  // Load depth map and precompute reference depth
+  useEffect(() => {
+    if (!depthMapUrl || !reference) return;
+    depthRef.current = null;
+    setDepthReady(false);
+    const img = new Image();
+    img.crossOrigin = "anonymous";
+    img.onload = () => {
+      const c = document.createElement("canvas");
+      c.width = img.width;
+      c.height = img.height;
+      const ctx = c.getContext("2d")!;
+      ctx.drawImage(img, 0, 0);
+      const { data } = ctx.getImageData(0, 0, img.width, img.height);
+
+      // Sample reference depth along the user-drawn reference line
+      const sx = img.width / imageWidth;
+      const sy = img.height / imageHeight;
+      const p1 = { x: reference.point1.x * sx, y: reference.point1.y * sy };
+      const p2 = { x: reference.point2.x * sx, y: reference.point2.y * sy };
+      const steps = Math.max(Math.abs(p2.x - p1.x), Math.abs(p2.y - p1.y), 1);
+      let sum = 0, n = 0;
+      for (let t = 0; t <= steps; t++) {
+        const x = Math.round(p1.x + (p2.x - p1.x) * t / steps);
+        const y = Math.round(p1.y + (p2.y - p1.y) * t / steps);
+        if (x >= 0 && y >= 0 && x < img.width && y < img.height) {
+          sum += data[(y * img.width + x) * 4];
+          n++;
+        }
+      }
+      const refDepth = n > 0 ? sum / n : 128;
+      depthRef.current = { data, width: img.width, height: img.height, refDepth };
+      setDepthReady(true);
+    };
+    img.src = depthMapUrl;
+  }, [depthMapUrl, reference, imageWidth, imageHeight]);
 
   // Auto-detect corners from SAM 3 wall mask
   useEffect(() => {
@@ -68,6 +116,36 @@ export default function PolygonSelect({
         setPhase("idle");
       });
   }, [autoDetectMaskUrl, imageWidth, imageHeight, phase]);
+
+  /**
+   * Compute depth-corrected segment length in meters.
+   * Samples N points along the segment, averages depth correction per point:
+   *   correctedMeters = rawMeters × (refDepth / avgDepth)
+   * Closer pixels (high depth value) → over-counted → scale down.
+   * Farther pixels (low depth value) → under-counted → scale up.
+   */
+  const getSegmentLength = useCallback((a: Point, b: Point): number | null => {
+    if (!reference || reference.pixelsPerMeter <= 0) return null;
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+    const pixLen = Math.sqrt(dx * dx + dy * dy);
+    const rawMeters = pixLen / reference.pixelsPerMeter;
+
+    const dc = depthRef.current;
+    if (!dc || dc.refDepth < 1) return rawMeters;
+
+    const N = Math.max(8, Math.round(pixLen / 8));
+    let corrSum = 0;
+    for (let t = 0; t <= N; t++) {
+      const px = a.x + dx * t / N;
+      const py = a.y + dy * t / N;
+      const dpx = Math.min(Math.round(px / imageWidth * dc.width), dc.width - 1);
+      const dpy = Math.min(Math.round(py / imageHeight * dc.height), dc.height - 1);
+      const d = dc.data[(dpy * dc.width + dpx) * 4];
+      corrSum += d > 0 ? Math.max(0.2, Math.min(5.0, dc.refDepth / d)) : 1;
+    }
+    return rawMeters * (corrSum / (N + 1));
+  }, [reference, imageWidth, imageHeight]);
 
   // Redraw canvas
   const redraw = useCallback(() => {
@@ -105,47 +183,40 @@ export default function PolygonSelect({
     }
 
     // Segment length labels
-    if (points.length >= 2 && pixelsPerMeter && pixelsPerMeter > 0) {
+    if (points.length >= 2 && reference) {
       const closed = points.length >= 3;
       const segCount = closed ? points.length : points.length - 1;
+      const fontSize = Math.max(11, Math.round(canvas.width / 45));
+
       for (let i = 0; i < segCount; i++) {
         const a = points[i];
         const b = points[(i + 1) % points.length];
-        const dx = b.x - a.x;
-        const dy = b.y - a.y;
-        const pixLen = Math.sqrt(dx * dx + dy * dy);
-        const meters = pixLen / pixelsPerMeter;
-        if (meters < 0.05) continue;
+        const meters = getSegmentLength(a, b);
+        if (meters === null || meters < 0.05) continue;
 
         const label = meters >= 10 ? `${meters.toFixed(1)} m` : `${meters.toFixed(2)} m`;
 
-        // Midpoint in canvas coords
+        // Midpoint + perpendicular offset
         const mx = (sx(a) + sx(b)) / 2;
         const my = (sy(a) + sy(b)) / 2;
-
-        // Perpendicular offset so text sits beside the line, not on top of it
-        const angle = Math.atan2(dy, dx);
-        const offset = 14;
-        // Offset above the line (flip if near edges)
-        const ox = -Math.sin(angle) * offset;
-        const oy = Math.cos(angle) * offset;
-
-        const tx = mx + ox;
-        const ty = my + oy;
+        const angle = Math.atan2(b.y - a.y, b.x - a.x);
+        const offset = fontSize + 4;
+        const tx = mx - Math.sin(angle) * offset;
+        const ty = my + Math.cos(angle) * offset;
 
         ctx.save();
-        ctx.font = `bold ${Math.max(11, Math.round(canvas.width / 45))}px sans-serif`;
+        ctx.font = `bold ${fontSize}px sans-serif`;
         ctx.textAlign = "center";
         ctx.textBaseline = "middle";
 
-        // Text background pill
+        // Background pill
         const tw = ctx.measureText(label).width;
         const pad = 4;
-        const rr = 4;
         const bx = tx - tw / 2 - pad;
-        const by = ty - 8 - pad / 2;
+        const by = ty - fontSize / 2 - pad / 2;
         const bw = tw + pad * 2;
-        const bh = 16 + pad;
+        const bh = fontSize + pad;
+        const rr = 4;
         ctx.beginPath();
         ctx.moveTo(bx + rr, by);
         ctx.lineTo(bx + bw - rr, by);
@@ -157,7 +228,7 @@ export default function PolygonSelect({
         ctx.lineTo(bx, by + rr);
         ctx.quadraticCurveTo(bx, by, bx + rr, by);
         ctx.closePath();
-        ctx.fillStyle = "rgba(0,0,0,0.65)";
+        ctx.fillStyle = "rgba(0,0,0,0.70)";
         ctx.fill();
 
         ctx.fillStyle = "#ffffff";
@@ -166,7 +237,7 @@ export default function PolygonSelect({
       }
     }
 
-    // Corner points with numbers
+    // Corner dots with numbers
     for (let i = 0; i < points.length; i++) {
       const p = points[i];
       const r = 7;
@@ -183,7 +254,7 @@ export default function PolygonSelect({
       ctx.textBaseline = "middle";
       ctx.fillText(String(i + 1), sx(p), sy(p));
     }
-  }, [points, canvasSize, scale, phase, pixelsPerMeter]);
+  }, [points, canvasSize, scale, phase, reference, getSegmentLength, depthReady]); // depthReady triggers redraw when depth loads
 
   useEffect(() => { redraw(); }, [redraw]);
 
@@ -205,9 +276,7 @@ export default function PolygonSelect({
     onPolygonSet({ points });
   };
 
-  const handleUndo = () => {
-    setPoints((prev) => prev.slice(0, -1));
-  };
+  const handleUndo = () => setPoints((prev) => prev.slice(0, -1));
 
   const handleReset = () => {
     setPoints([]);
@@ -229,7 +298,7 @@ export default function PolygonSelect({
 
   return (
     <div className="space-y-3">
-      {/* Status text */}
+      {/* Status */}
       <div className="flex items-start gap-2 text-sm text-slate-600">
         <Hexagon className="w-4 h-4 text-green-600 mt-0.5 shrink-0" />
         {phase === "detecting" && (
@@ -264,6 +333,9 @@ export default function PolygonSelect({
         {phase === "done" && (
           <span className="font-medium text-green-700">
             Julkisivu rajattu — {points.length} pistettä.
+            {depthMapUrl && depthReady && (
+              <span className="text-slate-500 font-normal"> Pituudet syvyyskorjattu.</span>
+            )}
           </span>
         )}
       </div>
@@ -276,9 +348,7 @@ export default function PolygonSelect({
           height={canvasSize.h}
           onClick={handleCanvasClick}
           className={`block w-full ${
-            phase === "drawing" || phase === "review"
-              ? "cursor-crosshair"
-              : "cursor-default"
+            phase === "drawing" || phase === "review" ? "cursor-crosshair" : "cursor-default"
           }`}
         />
         {phase === "detecting" && (
@@ -293,7 +363,6 @@ export default function PolygonSelect({
 
       {/* Controls */}
       <div className="flex flex-wrap items-center gap-2">
-        {/* Auto-detected: accept or edit */}
         {phase === "review" && (
           <button
             onClick={handleConfirm}
@@ -303,8 +372,6 @@ export default function PolygonSelect({
             Hyväksy ({points.length} pistettä)
           </button>
         )}
-
-        {/* Manual draw confirm */}
         {phase === "drawing" && points.length >= 3 && (
           <button
             onClick={handleConfirm}
@@ -314,8 +381,6 @@ export default function PolygonSelect({
             Valmis ({points.length} pistettä)
           </button>
         )}
-
-        {/* Start manual drawing */}
         {(phase === "idle" || phase === "review") && (
           <button
             onClick={handleStartManual}
@@ -325,8 +390,6 @@ export default function PolygonSelect({
             {phase === "review" ? "Piirrä itse" : "Merkitse nurkat"}
           </button>
         )}
-
-        {/* Re-run auto detection */}
         {autoDetectMaskUrl && (phase === "idle" || phase === "review") && (
           <button
             onClick={handleReDetect}
@@ -336,8 +399,6 @@ export default function PolygonSelect({
             Tunnista uudelleen
           </button>
         )}
-
-        {/* Undo last point */}
         {(phase === "drawing" || phase === "review") && points.length > 0 && (
           <button
             onClick={handleUndo}
@@ -347,8 +408,6 @@ export default function PolygonSelect({
             Poista viimeinen
           </button>
         )}
-
-        {/* Reset */}
         {phase !== "idle" && phase !== "detecting" && (
           <button
             onClick={handleReset}

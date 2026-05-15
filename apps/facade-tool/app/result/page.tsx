@@ -246,7 +246,8 @@ export default function ResultPage() {
                     setOpenPanel("measure");
                   }}
                   autoDetectMaskUrl={session.wallMaskUrl}
-                  pixelsPerMeter={session.reference.pixelsPerMeter}
+                  reference={session.reference}
+                  depthMapUrl={session.depthMapUrl}
                 />
                 {hasPolygon && (
                   <button
