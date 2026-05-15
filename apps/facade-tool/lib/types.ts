@@ -36,7 +36,15 @@ export interface BBoxHint {
   score?: number;
 }
 
+/** Polygon drawn by user outlining the exact facade area to measure. */
+export interface PolygonData {
+  /** Corner points in original image pixel coordinates. */
+  points: Point[];
+}
+
 export interface AnalysisSession {
+  /** Facade outline polygon — when present, used instead of SAM wall masks for area. */
+  polygon?: PolygonData;
   /** URL in fal.ai storage — passed to AI models and used for display */
   uploadedImageUrl: string;
   imageWidth: number;

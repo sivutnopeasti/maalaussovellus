@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState, useCallback } from "react";
 import { Layers, RefreshCw } from "lucide-react";
-import type { MaskResult, MaskCategory } from "@/lib/types";
+import type { MaskResult, MaskCategory, Point } from "@/lib/types";
 
 const CATEGORY_COLORS: Record<MaskCategory, string> = {
   wall: "#22C55E",
@@ -33,6 +33,8 @@ interface Props {
   canvasOnly?: boolean;
   /** Show only the list (no canvas). Default: false */
   listOnly?: boolean;
+  /** Polygon drawn by user — drawn as an amber dashed outline on the canvas. */
+  polygonPoints?: Point[];
 }
 
 export default function SegmentationOverlay({
@@ -42,6 +44,7 @@ export default function SegmentationOverlay({
   onMasksUpdated,
   canvasOnly = false,
   listOnly = false,
+  polygonPoints,
 }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [isRendering, setIsRendering] = useState(false);
@@ -107,10 +110,37 @@ export default function SegmentationOverlay({
           // Skip masks that fail to load
         }
       }
+
+      // Draw polygon outline if provided
+      if (polygonPoints && polygonPoints.length >= 3) {
+        ctx.beginPath();
+        ctx.moveTo(polygonPoints[0].x, polygonPoints[0].y);
+        for (let i = 1; i < polygonPoints.length; i++) {
+          ctx.lineTo(polygonPoints[i].x, polygonPoints[i].y);
+        }
+        ctx.closePath();
+        ctx.strokeStyle = "#f59e0b";
+        ctx.lineWidth = Math.max(2, origImg.width / 400);
+        ctx.setLineDash([origImg.width / 80, origImg.width / 160]);
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        // Corner dots
+        for (const p of polygonPoints) {
+          const r = Math.max(6, origImg.width / 180);
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
+          ctx.fillStyle = "#f59e0b";
+          ctx.fill();
+          ctx.strokeStyle = "#fff";
+          ctx.lineWidth = 2;
+          ctx.stroke();
+        }
+      }
     } finally {
       setIsRendering(false);
     }
-  }, [masks, originalImageUrl]);
+  }, [masks, originalImageUrl, polygonPoints]);
 
   useEffect(() => {
     if (!isAutoClassifying) {

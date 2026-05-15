@@ -21,6 +21,7 @@ import QuoteForm from "@/components/QuoteForm";
 import {
   enrichMasksWithPixelCounts,
   calculatePreciseMeasurement,
+  calculatePolygonMeasurement,
   type PreciseMeasurementResult,
 } from "@/lib/measure";
 import { autoClassifyMasks } from "@/lib/autoClassify";
@@ -87,17 +88,29 @@ export default function ResultPage() {
     setIsMeasuring(true);
     setError(null);
     try {
-      const enriched = await enrichMasksWithPixelCounts(masks);
-      setMasks(enriched);
-
-      const result = await calculatePreciseMeasurement(
-        enriched,
-        session.reference,
-        session.depthMapUrl,
-        session.mlsdMapUrl ?? null,
-        vanishingPoint,
-      );
-      setMeasurement(result);
+      if (session.polygon && session.polygon.points.length >= 3) {
+        // Polygon-based calculation: Shoelace area minus SAM3 opening areas
+        const result = await calculatePolygonMeasurement(
+          session.polygon.points,
+          masks,
+          session.imageWidth,
+          session.imageHeight,
+          session.reference,
+        );
+        setMeasurement(result);
+      } else {
+        // Fallback: mask-based calculation
+        const enriched = await enrichMasksWithPixelCounts(masks);
+        setMasks(enriched);
+        const result = await calculatePreciseMeasurement(
+          enriched,
+          session.reference,
+          session.depthMapUrl,
+          session.mlsdMapUrl ?? null,
+          vanishingPoint,
+        );
+        setMeasurement(result);
+      }
       setOpenPanel("color");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Laskenta epäonnistui.");
@@ -179,7 +192,9 @@ export default function ResultPage() {
 
   const wallCount = masks.filter((m) => m.category === "wall").length;
   const openingCount = masks.filter((m) => m.category === "opening").length;
-  const canCalculate = wallCount > 0;
+  // Can calculate if we have a polygon (preferred) OR wall masks (fallback)
+  const hasPolygon = !!(session?.polygon && session.polygon.points.length >= 3);
+  const canCalculate = hasPolygon || wallCount > 0;
 
   return (
     <div className="min-h-screen flex flex-col">
@@ -244,6 +259,7 @@ export default function ResultPage() {
                       imageHeight={session.imageHeight}
                       isAutoClassifying={isAutoClassifying}
                       onMasksUpdated={handleMasksUpdated}
+                      polygonPoints={session.polygon?.points}
                       canvasOnly
                     />
                   </div>
@@ -372,17 +388,17 @@ export default function ResultPage() {
               <AccordionPanel
                 icon={<Calculator />}
                 title="2. Laske neliömetrit"
-                subtitle={
-                  measurement
-                    ? `${measurement.wallAreaM2.toFixed(1)} m² — ${
-                        measurement.method === "depth+perspective"
-                          ? "syvyys + perspektiivikorjaus"
-                          : measurement.method === "depth"
-                            ? "syvyyskorjattu"
-                            : "peruslaskenta"
-                      }`
-                    : "Syvyys + MLSD perspektiivikorjaus"
-                }
+                  subtitle={
+                    measurement
+                      ? `${measurement.wallAreaM2.toFixed(1)} m² — ${
+                          measurement.method === "depth+perspective"
+                            ? hasPolygon ? "monikulmio + perspektiivikorjaus" : "syvyys + perspektiivikorjaus"
+                            : measurement.method === "depth"
+                              ? "syvyyskorjattu"
+                              : "peruslaskenta"
+                        }`
+                      : hasPolygon ? "Monikulmio + perspektiivikorjaus" : "Syvyys + perspektiivikorjaus"
+                  }
                 isOpen={openPanel === "measure"}
                 isDone={!!measurement}
                 onToggle={() =>
@@ -390,6 +406,18 @@ export default function ResultPage() {
                 }
               >
                 <div className="space-y-3">
+                  {/* Polygon info */}
+                  {hasPolygon && (
+                    <div className="p-3 bg-green-50 border border-green-200 rounded-xl text-xs text-green-700 flex items-start gap-2">
+                      <CheckCircle2 className="w-4 h-4 shrink-0 mt-0.5" />
+                      <span>
+                        <strong>Monikulmio-mittaus:</strong>{" "}
+                        {session.polygon!.points.length} pistettä — tämä on tarkin menetelmä.
+                        Ikkunat ja ovet vähennetään automaattisesti.
+                      </span>
+                    </div>
+                  )}
+
                   {/* Reference info */}
                   <div className="p-3 bg-slate-50 rounded-xl text-xs text-slate-600 space-y-1">
                     <p>

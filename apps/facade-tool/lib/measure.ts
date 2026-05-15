@@ -16,7 +16,7 @@
  *   is cos(θ) of the true width → corrected area = rawArea / cos²(θ).
  */
 
-import type { MaskResult, ReferenceData, MeasurementResult } from "./types";
+import type { MaskResult, ReferenceData, MeasurementResult, Point } from "./types";
 
 // ─── Public API ───────────────────────────────────────────────────────────────
 
@@ -502,6 +502,83 @@ function extractDominantLineAngle(
   // If angle is very close to 0°, no meaningful correction needed
   if (Math.abs(bestAngle) < 2) return null;
   return bestAngle;
+}
+
+/**
+ * Polygon-based area measurement using the Shoelace formula.
+ *
+ * The user draws a polygon around the exact facade outline (corners + roof ridge).
+ * Area = Shoelace(polygon) / pixelsPerMeter²
+ * Perspective correction = 1/cos(referenceLineAngle) — derived from the reference line
+ * that was drawn along a known-horizontal board.
+ *
+ * Opening areas (windows/doors from SAM 3) are subtracted from the gross polygon area.
+ */
+export async function calculatePolygonMeasurement(
+  polygonPoints: Point[],
+  masks: MaskResult[],
+  imageWidth: number,
+  imageHeight: number,
+  reference: ReferenceData,
+): Promise<PreciseMeasurementResult> {
+  const ppm = reference.pixelsPerMeter;
+
+  // ── Shoelace area in image pixel² ─────────────────────────────────────────
+  let area = 0;
+  const n = polygonPoints.length;
+  for (let i = 0; i < n; i++) {
+    const j = (i + 1) % n;
+    area += polygonPoints[i].x * polygonPoints[j].y;
+    area -= polygonPoints[j].x * polygonPoints[i].y;
+  }
+  const grossPixels = Math.abs(area) / 2;
+  const grossAreaM2raw = grossPixels / (ppm * ppm);
+
+  // ── Perspective correction from reference line angle ──────────────────────
+  const angleDeg = reference.angleDeg ?? 0;
+  let perspectiveCorrectionFactor = 1;
+  if (Math.abs(angleDeg) > 1) {
+    const cosTheta = Math.cos(Math.abs(angleDeg) * Math.PI / 180);
+    if (cosTheta > 0.1) {
+      perspectiveCorrectionFactor = Math.max(0.5, Math.min(2.5, 1 / cosTheta));
+    }
+  }
+  const grossAreaM2 = grossAreaM2raw * perspectiveCorrectionFactor;
+
+  // ── Opening areas (from SAM 3 masks) ─────────────────────────────────────
+  // Scale opening pixel counts from mask resolution to original image resolution.
+  const openingMasks = masks.filter((m) => m.category === "opening");
+  let openingPixelsScaled = 0;
+  for (const mask of openingMasks) {
+    try {
+      const mc = await loadImageToCanvas(mask.url);
+      const data = mc.getContext("2d")!.getImageData(0, 0, mc.width, mc.height).data;
+      let rawCount = 0;
+      for (let i = 0; i < data.length; i += 4) {
+        if (data[i] > 127 || data[i + 3] > 127) rawCount++;
+      }
+      // Scale: mask is (mc.width × mc.height), original is (imageWidth × imageHeight)
+      const scaleFactor = (imageWidth * imageHeight) / (mc.width * mc.height);
+      openingPixelsScaled += rawCount * scaleFactor;
+    } catch {
+      // skip unloadable masks
+    }
+  }
+  const openingAreaM2 = (openingPixelsScaled / (ppm * ppm)) * perspectiveCorrectionFactor;
+  const netAreaM2 = Math.max(grossAreaM2 - openingAreaM2, 0);
+
+  return {
+    wallPixels: grossPixels,
+    openingPixels: openingPixelsScaled,
+    netWallPixels: Math.max(grossPixels - openingPixelsScaled, 0),
+    pixelsPerMeter: ppm,
+    wallAreaM2: netAreaM2,
+    depthCorrectionFactor: 1,
+    perspectiveCorrectionFactor,
+    dominantLineAngleDeg: Math.abs(angleDeg) > 1 ? angleDeg : null,
+    vanishingPointCorrectionFactor: 1,
+    method: Math.abs(angleDeg) > 1 ? "depth+perspective" : "basic",
+  };
 }
 
 function loadImageToCanvas(url: string): Promise<HTMLCanvasElement> {

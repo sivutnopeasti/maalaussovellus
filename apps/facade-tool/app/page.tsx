@@ -5,9 +5,10 @@ import { useRouter } from "next/navigation";
 import { Building2, ChevronRight, CheckCircle2, Loader2, AlertCircle } from "lucide-react";
 import ImageUpload from "@/components/ImageUpload";
 import ReferenceMeasure from "@/components/ReferenceMeasure";
-import type { ReferenceData, AnalysisSession, MaskResult, BBoxHint } from "@/lib/types";
+import PolygonSelect from "@/components/PolygonSelect";
+import type { ReferenceData, PolygonData, AnalysisSession, MaskResult, BBoxHint } from "@/lib/types";
 
-type Step = "upload" | "reference" | "analysing";
+type Step = "upload" | "reference" | "polygon" | "analysing";
 
 export default function HomePage() {
   const router = useRouter();
@@ -16,6 +17,7 @@ export default function HomePage() {
   const [imageDataUrl, setImageDataUrl] = useState<string>("");
   const [imageDimensions, setImageDimensions] = useState({ w: 0, h: 0 });
   const [reference, setReference] = useState<ReferenceData | null>(null);
+  const [polygon, setPolygon] = useState<PolygonData | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const handleImageSelected = (file: File, dataUrl: string) => {
@@ -31,10 +33,15 @@ export default function HomePage() {
 
   const handleReferenceSet = (data: ReferenceData) => {
     setReference(data);
+    setPolygon(null);
+  };
+
+  const handlePolygonSet = (data: PolygonData) => {
+    setPolygon(data);
   };
 
   const handleAnalyse = async () => {
-    if (!imageFile || !reference) return;
+    if (!imageFile || !reference || !polygon) return;
     setStep("analysing");
     setError(null);
 
@@ -90,6 +97,7 @@ export default function HomePage() {
         imageWidth: imageDimensions.w,
         imageHeight: imageDimensions.h,
         reference,
+        polygon: polygon ?? undefined,
         masks: segData.masks,
         depthMapUrl,
         cannyMapUrl,
@@ -104,13 +112,14 @@ export default function HomePage() {
     } catch (err) {
       console.error(err);
       setError(err instanceof Error ? err.message : "Tuntematon virhe.");
-      setStep("reference");
+      setStep("polygon");
     }
   };
 
   const STEPS = [
     { key: "upload", label: "Lataa kuva" },
     { key: "reference", label: "Referenssimitta" },
+    { key: "polygon", label: "Rajaa julkisivu" },
     { key: "analysing", label: "Analysointi" },
   ] as const;
 
@@ -180,7 +189,7 @@ export default function HomePage() {
           )}
 
           {/* Step: upload */}
-          {(step === "upload" || step === "reference") && (
+          {(step === "upload" || step === "reference" || step === "polygon") && (
             <section className="bg-white rounded-2xl border border-slate-200 p-6 space-y-4 shadow-sm">
               <div className="flex items-center gap-2">
                 <div
@@ -203,6 +212,7 @@ export default function HomePage() {
                   setImageFile(null);
                   setImageDataUrl("");
                   setReference(null);
+                  setPolygon(null);
                   setStep("upload");
                 }}
               />
@@ -210,7 +220,7 @@ export default function HomePage() {
           )}
 
           {/* Step: reference measure */}
-          {step === "reference" && imageDataUrl && (
+          {(step === "reference" || step === "polygon") && imageDataUrl && (
             <section className="bg-white rounded-2xl border border-slate-200 p-6 space-y-4 shadow-sm">
               <div className="flex items-center gap-2">
                 <div
@@ -254,8 +264,54 @@ export default function HomePage() {
             </section>
           )}
 
+          {/* "Continue to polygon" button */}
+          {step === "reference" && reference && (
+            <button
+              onClick={() => setStep("polygon")}
+              className="w-full flex items-center justify-center gap-2 py-4 bg-blue-600 hover:bg-blue-700 text-white text-base font-semibold rounded-2xl shadow-lg shadow-blue-200 transition-colors"
+            >
+              Jatka julkisivun rajaukseen
+              <ChevronRight className="w-5 h-5" />
+            </button>
+          )}
+
+          {/* Step: polygon — click corners */}
+          {(step === "polygon") && imageDataUrl && (
+            <section className="bg-white rounded-2xl border border-slate-200 p-6 space-y-4 shadow-sm">
+              <div className="flex items-center gap-2">
+                <div
+                  className={`w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold ${
+                    polygon
+                      ? "bg-green-100 text-green-700"
+                      : "bg-blue-600 text-white"
+                  }`}
+                >
+                  {polygon ? <CheckCircle2 className="w-4 h-4" /> : "3"}
+                </div>
+                <h2 className="font-semibold text-slate-800">Rajaa julkisivu</h2>
+              </div>
+              <p className="text-sm text-slate-500">
+                Klikkaa talon nurkat ja harjapiste järjestyksessä. Kaikki myötä- tai
+                vastapäivään — mikä tahansa muoto toimii. Tämä korvaa automaattisen
+                seinäntunnistuksen ja on tarkin tapa mitata.
+              </p>
+              <PolygonSelect
+                imageDataUrl={imageDataUrl}
+                onPolygonSet={handlePolygonSet}
+              />
+              {polygon && (
+                <div className="flex items-center gap-2 p-3 bg-green-50 rounded-xl border border-green-200 text-sm text-green-700">
+                  <CheckCircle2 className="w-4 h-4 shrink-0" />
+                  <span>
+                    Julkisivu rajattu — <strong>{polygon.points.length} nurkkapistettä</strong>
+                  </span>
+                </div>
+              )}
+            </section>
+          )}
+
           {/* Analyse button */}
-          {step === "reference" && imageDataUrl && reference && (
+          {step === "polygon" && polygon && (
             <button
               onClick={handleAnalyse}
               className="w-full flex items-center justify-center gap-2 py-4 bg-blue-600 hover:bg-blue-700 text-white text-base font-semibold rounded-2xl shadow-lg shadow-blue-200 transition-colors"
