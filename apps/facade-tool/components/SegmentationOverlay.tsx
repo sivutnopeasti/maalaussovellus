@@ -79,10 +79,12 @@ export default function SegmentationOverlay({
           const imgData = octx.getImageData(0, 0, origImg.width, origImg.height);
           const d = imgData.data;
 
-          // For each masked pixel (R > 127): replace with color + alpha
-          // For non-masked pixels: set alpha = 0 (fully transparent → original shows through)
+          // Detect whether this is a binary mask (grayscale R>127) or
+          // an alpha-masked image (apply_mask=true → alpha channel encodes selection).
+          // We check both: if alpha > 127 OR R > 127 the pixel is "in mask".
           for (let i = 0; i < d.length; i += 4) {
-            if (d[i] > 127) {
+            const inMask = d[i] > 127 || d[i + 3] > 127;
+            if (inMask) {
               d[i]     = r;
               d[i + 1] = g;
               d[i + 2] = b;

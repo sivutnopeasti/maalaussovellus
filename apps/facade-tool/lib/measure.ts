@@ -37,7 +37,7 @@ export function countMaskPixels(maskUrl: string): Promise<number> {
       const { data } = ctx.getImageData(0, 0, c.width, c.height);
       let count = 0;
       for (let i = 0; i < data.length; i += 4) {
-        if (data[i] > 127) count++;
+        if (data[i] > 127 || data[i + 3] > 127) count++;
       }
       resolve(count);
     };
@@ -297,7 +297,8 @@ async function sumDepthWeightedPixels(
 
       for (let y = 0; y < mH; y++) {
         for (let x = 0; x < mW; x++) {
-          if (mData[(y * mW + x) * 4] > 127) {
+          const mi = (y * mW + x) * 4;
+          if (mData[mi] > 127 || mData[mi + 3] > 127) {
             // Map mask pixel → depth map pixel
             const dx = Math.min(Math.round((x / mW) * dW), dW - 1);
             const dy = Math.min(Math.round((y / mH) * dH), dH - 1);
@@ -357,7 +358,7 @@ function sampleMaskedDepth(
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {
       const idx = (y * width + x) * 4;
-      if (maskData[idx] > 127) {
+      if (maskData[idx] > 127 || maskData[idx + 3] > 127) {
         sum += depthData[idx];
         n++;
       }

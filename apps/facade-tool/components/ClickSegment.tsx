@@ -103,12 +103,11 @@ export default function ClickSegment({
           body: JSON.stringify({ imageUrl, points, imageWidth, imageHeight }),
         });
 
+        const json = await res.json().catch(() => ({}));
         if (!res.ok) {
-          const e = await res.json().catch(() => ({}));
-          throw new Error(e.error ?? "Segmentointi epäonnistui");
+          throw new Error(json.detail ?? json.error ?? "Segmentointi epäonnistui");
         }
-
-        const { maskUrl, width, height } = await res.json();
+        const { maskUrl, width, height } = json;
         const cfg = MODE_CONFIG[mode];
 
         const newMask: MaskResult = {

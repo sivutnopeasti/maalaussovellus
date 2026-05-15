@@ -191,7 +191,8 @@ function computeMaskStats(data: Uint8ClampedArray, w: number, h: number): MaskSt
   let minX = w, minY = h, maxX = 0, maxY = 0;
   for (let y = 0; y < h; y++) {
     for (let x = 0; x < w; x++) {
-      if (data[(y * w + x) * 4] > 127) {
+      const idx = (y * w + x) * 4;
+      if (data[idx] > 127 || data[idx + 3] > 127) {
         count++;
         sumX += x; sumY += y;
         if (x < minX) minX = x;
@@ -245,7 +246,8 @@ function sampleAvgDepth(
   let sum = 0, n = 0;
   for (let y = 0; y < mH; y += 2) {
     for (let x = 0; x < mW; x += 2) {
-      if (maskData[(y * mW + x) * 4] > 127) {
+      const idx = (y * mW + x) * 4;
+      if (maskData[idx] > 127 || maskData[idx + 3] > 127) {
         const dx = Math.min(Math.round(x * dW / mW), dW - 1);
         const dy = Math.min(Math.round(y * dH / mH), dH - 1);
         sum += depthData[(dy * dW + dx) * 4];
@@ -270,7 +272,8 @@ function sampleColorStats(
   const samples: number[] = [];
   for (let y = 0; y < mH; y += 3) {
     for (let x = 0; x < mW; x += 3) {
-      if (maskData[(y * mW + x) * 4] > 127) {
+      const midx = (y * mW + x) * 4;
+      if (maskData[midx] > 127 || maskData[midx + 3] > 127) {
         const ox = Math.min(Math.round(x * oW / mW), oW - 1);
         const oy = Math.min(Math.round(y * oH / mH), oH - 1);
         const oi = (oy * oW + ox) * 4;
