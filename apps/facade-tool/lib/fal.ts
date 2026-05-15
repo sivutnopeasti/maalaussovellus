@@ -78,19 +78,17 @@ export async function runSam2PointSegment(
   points: Array<{ x: number; y: number; label: 1 | 0 }>,
 ): Promise<Sam2PointSegmentOutput> {
   // Fal.ai TypeScript type says label: "0"|"1" but JSON docs show numeric 0|1.
-  // Use unknown cast to send as numbers (matching the actual JSON schema).
-  const input = {
-    image_url: imageUrl,
-    prompts: points.map((p) => ({ x: p.x, y: p.y, label: p.label })),
-    // apply_mask: true  → returns image with only selected region visible (RGB mask)
-    // apply_mask: false → returns binary mask (white = selected)
-    // We use true so the selected region has its original colors — SegmentationOverlay
-    // treats any non-black pixel as "part of mask".
-    apply_mask: true,
-    output_format: "png",
-  } as unknown as Parameters<typeof fal.subscribe>[1]["input"];
-
-  const result = await fal.subscribe("fal-ai/sam2/image", { input });
+  // The overloaded fal.subscribe types are too strict here — use a plain function call.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const falAny = fal as any;
+  const result = await falAny.subscribe("fal-ai/sam2/image", {
+    input: {
+      image_url: imageUrl,
+      prompts: points.map((p) => ({ x: p.x, y: p.y, label: p.label })),
+      apply_mask: true,
+      output_format: "png",
+    },
+  });
   return result.data as unknown as Sam2PointSegmentOutput;
 }
 
