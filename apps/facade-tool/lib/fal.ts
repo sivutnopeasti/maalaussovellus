@@ -61,6 +61,33 @@ export async function runSam2AutoSegment(
   return result.data as Sam2AutoSegmentOutput;
 }
 
+// ─── SAM 2 point-prompted (click) segmentation ───────────────────────────────
+
+export interface Sam2PointSegmentOutput {
+  image: FalImage;
+}
+
+/**
+ * Run SAM 2 with explicit pixel-coordinate point prompts.
+ * x and y must be **pixel coordinates** in the original image space.
+ * label: 1 = foreground (include), 0 = background (exclude)
+ * apply_mask: false → returns binary mask (white = selected area)
+ */
+export async function runSam2PointSegment(
+  imageUrl: string,
+  points: Array<{ x: number; y: number; label: 1 | 0 }>,
+): Promise<Sam2PointSegmentOutput> {
+  const result = await fal.subscribe("fal-ai/sam2/image", {
+    input: {
+      image_url: imageUrl,
+      prompts: points,
+      apply_mask: false,
+      output_format: "png",
+    },
+  });
+  return result.data as unknown as Sam2PointSegmentOutput;
+}
+
 // ─── SAM 3 text-prompted segmentation ────────────────────────────────────────
 
 export interface Sam3MaskMetadata {

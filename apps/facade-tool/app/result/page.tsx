@@ -14,6 +14,7 @@ import {
   ChevronUp,
 } from "lucide-react";
 import SegmentationOverlay from "@/components/SegmentationOverlay";
+import ClickSegment from "@/components/ClickSegment";
 import ColorPicker from "@/components/ColorPicker";
 import QuoteForm from "@/components/QuoteForm";
 import {
@@ -72,6 +73,10 @@ export default function ResultPage() {
 
   const handleMasksUpdated = useCallback((updated: MaskResult[]) => {
     setMasks(updated);
+  }, []);
+
+  const handleMaskAdded = useCallback((newMask: MaskResult) => {
+    setMasks((prev) => [...prev, newMask]);
   }, []);
 
   const handleCalculate = async () => {
@@ -322,6 +327,20 @@ export default function ResultPage() {
                   isAutoClassifying={isAutoClassifying}
                   onMasksUpdated={handleMasksUpdated}
                 />
+
+                {/* Click-to-segment — add walls/openings by clicking */}
+                <div className="mt-4 pt-4 border-t border-slate-100">
+                  <p className="text-xs font-medium text-slate-600 mb-2">
+                    Lisää alueita klikkaamalla
+                  </p>
+                  <ClickSegment
+                    imageUrl={session.uploadedImageUrl}
+                    imageWidth={session.imageWidth}
+                    imageHeight={session.imageHeight}
+                    onMaskAdded={handleMaskAdded}
+                  />
+                </div>
+
                 {canCalculate && (
                   <button
                     onClick={() => setOpenPanel("measure")}

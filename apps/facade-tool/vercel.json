@@ -8,6 +8,7 @@
     "app/api/depth/route.ts": { "maxDuration": 60 },
     "app/api/visualize/route.ts": { "maxDuration": 180 },
     "app/api/upload/route.ts": { "maxDuration": 60 },
-    "app/api/quote/route.ts": { "maxDuration": 30 }
+    "app/api/quote/route.ts": { "maxDuration": 30 },
+    "app/api/segment-click/route.ts": { "maxDuration": 60 }
   }
 }
