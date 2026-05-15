@@ -741,8 +741,8 @@ export async function calculatePolygonMeasurement(
   const netAreaM2 = Math.max(grossAreaM2 - openingAreaM2, 0);
 
   const method = depthMapUrl && grossRawPixels > 0
-    ? Math.abs(angleDeg) > 1 ? "depth+perspective" : "depth"
-    : Math.abs(angleDeg) > 1 ? "depth+perspective" : "basic";
+    ? Math.abs(perspectiveAngleDeg) > 1 ? "depth+perspective" : "depth"
+    : Math.abs(perspectiveAngleDeg) > 1 ? "depth+perspective" : "basic";
 
   return {
     wallPixels: grossRawPixels,
@@ -752,7 +752,7 @@ export async function calculatePolygonMeasurement(
     wallAreaM2: netAreaM2,
     depthCorrectionFactor,
     perspectiveCorrectionFactor,
-    dominantLineAngleDeg: Math.abs(angleDeg) > 1 ? angleDeg : null,
+    dominantLineAngleDeg: Math.abs(perspectiveAngleDeg) > 1 ? perspectiveAngleDeg : null,
     vanishingPointCorrectionFactor: 1,
     method,
   };
