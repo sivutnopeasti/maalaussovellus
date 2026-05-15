@@ -13,6 +13,8 @@ interface Props {
   onPolygonSet: (data: PolygonData) => void;
   /** SAM 3 wall mask URL — when provided, auto-detects corners on mount. */
   autoDetectMaskUrl?: string | null;
+  /** Pixels per meter from reference line — used to display segment lengths. */
+  pixelsPerMeter?: number;
 }
 
 type Phase = "idle" | "detecting" | "review" | "drawing" | "done";
@@ -23,6 +25,7 @@ export default function PolygonSelect({
   imageHeight,
   onPolygonSet,
   autoDetectMaskUrl,
+  pixelsPerMeter,
 }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const imageRef = useRef<HTMLImageElement | null>(null);
@@ -101,6 +104,68 @@ export default function PolygonSelect({
       ctx.stroke();
     }
 
+    // Segment length labels
+    if (points.length >= 2 && pixelsPerMeter && pixelsPerMeter > 0) {
+      const closed = points.length >= 3;
+      const segCount = closed ? points.length : points.length - 1;
+      for (let i = 0; i < segCount; i++) {
+        const a = points[i];
+        const b = points[(i + 1) % points.length];
+        const dx = b.x - a.x;
+        const dy = b.y - a.y;
+        const pixLen = Math.sqrt(dx * dx + dy * dy);
+        const meters = pixLen / pixelsPerMeter;
+        if (meters < 0.05) continue;
+
+        const label = meters >= 10 ? `${meters.toFixed(1)} m` : `${meters.toFixed(2)} m`;
+
+        // Midpoint in canvas coords
+        const mx = (sx(a) + sx(b)) / 2;
+        const my = (sy(a) + sy(b)) / 2;
+
+        // Perpendicular offset so text sits beside the line, not on top of it
+        const angle = Math.atan2(dy, dx);
+        const offset = 14;
+        // Offset above the line (flip if near edges)
+        const ox = -Math.sin(angle) * offset;
+        const oy = Math.cos(angle) * offset;
+
+        const tx = mx + ox;
+        const ty = my + oy;
+
+        ctx.save();
+        ctx.font = `bold ${Math.max(11, Math.round(canvas.width / 45))}px sans-serif`;
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+
+        // Text background pill
+        const tw = ctx.measureText(label).width;
+        const pad = 4;
+        const rr = 4;
+        const bx = tx - tw / 2 - pad;
+        const by = ty - 8 - pad / 2;
+        const bw = tw + pad * 2;
+        const bh = 16 + pad;
+        ctx.beginPath();
+        ctx.moveTo(bx + rr, by);
+        ctx.lineTo(bx + bw - rr, by);
+        ctx.quadraticCurveTo(bx + bw, by, bx + bw, by + rr);
+        ctx.lineTo(bx + bw, by + bh - rr);
+        ctx.quadraticCurveTo(bx + bw, by + bh, bx + bw - rr, by + bh);
+        ctx.lineTo(bx + rr, by + bh);
+        ctx.quadraticCurveTo(bx, by + bh, bx, by + bh - rr);
+        ctx.lineTo(bx, by + rr);
+        ctx.quadraticCurveTo(bx, by, bx + rr, by);
+        ctx.closePath();
+        ctx.fillStyle = "rgba(0,0,0,0.65)";
+        ctx.fill();
+
+        ctx.fillStyle = "#ffffff";
+        ctx.fillText(label, tx, ty);
+        ctx.restore();
+      }
+    }
+
     // Corner points with numbers
     for (let i = 0; i < points.length; i++) {
       const p = points[i];
@@ -118,7 +183,7 @@ export default function PolygonSelect({
       ctx.textBaseline = "middle";
       ctx.fillText(String(i + 1), sx(p), sy(p));
     }
-  }, [points, canvasSize, scale, phase]);
+  }, [points, canvasSize, scale, phase, pixelsPerMeter]);
 
   useEffect(() => { redraw(); }, [redraw]);
 
