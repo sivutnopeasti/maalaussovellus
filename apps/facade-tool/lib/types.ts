@@ -1,0 +1,71 @@
+export interface Point {
+  x: number;
+  y: number;
+}
+
+export interface ReferenceData {
+  point1: Point;
+  point2: Point;
+  meters: number;
+  pixelsPerMeter: number;
+  pixelDistance: number;
+}
+
+export type MaskCategory = "wall" | "opening" | "ignored";
+
+export interface MaskResult {
+  index: number;
+  url: string;
+  width: number;
+  height: number;
+  category: MaskCategory;
+  pixelCount?: number;
+}
+
+export interface AnalysisSession {
+  /** URL in fal.ai storage — passed to AI models */
+  uploadedImageUrl: string;
+  /** Base64 data URL for client-side rendering */
+  imageDataUrl: string;
+  imageWidth: number;
+  imageHeight: number;
+  reference: ReferenceData;
+  masks: MaskResult[];
+  depthMapUrl: string;
+}
+
+export interface MeasurementResult {
+  wallPixels: number;
+  openingPixels: number;
+  netWallPixels: number;
+  pixelsPerMeter: number;
+  wallAreaM2: number;
+}
+
+export interface PaintColor {
+  name: string;
+  hex: string;
+}
+
+export const PAINT_COLORS: PaintColor[] = [
+  { name: "Lumivalkoinen", hex: "#F8F8F0" },
+  { name: "Kermavalkoinen", hex: "#FFF5DC" },
+  { name: "Vaalean beige", hex: "#E8D5B7" },
+  { name: "Hiekka", hex: "#C4A882" },
+  { name: "Vaalean harmaa", hex: "#D1D5DB" },
+  { name: "Keski harmaa", hex: "#9CA3AF" },
+  { name: "Tummanharmaa", hex: "#4B5563" },
+  { name: "Liuskekivi", hex: "#334155" },
+  { name: "Sinenharmaa", hex: "#94A3B8" },
+  { name: "Sininen", hex: "#3B82F6" },
+  { name: "Yönsininen", hex: "#1E3A5F" },
+  { name: "Turkoosin", hex: "#0D9488" },
+  { name: "Salvianharmaa", hex: "#84A98C" },
+  { name: "Metsänvihreä", hex: "#2D6A4F" },
+  { name: "Oliivi", hex: "#6B7C3D" },
+  { name: "Keltainen okra", hex: "#D4A017" },
+  { name: "Terrakotta", hex: "#C2674F" },
+  { name: "Tiilenpunainen", hex: "#9B2335" },
+  { name: "Ruskea", hex: "#7B4F2E" },
+  { name: "Tummruskea", hex: "#3D2314" },
+];

@@ -1,0 +1,28 @@
+node_modules/
+.env
+.env.local
+.env*.local
+dist/
+.next/
+out/
+.expo/
+*.jks
+*.p8
+*.p12
+*.key
+*.mobileprovision
+*.orig.*
+web-build/
+google-services.json
+*.wpress
+*.zip
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo

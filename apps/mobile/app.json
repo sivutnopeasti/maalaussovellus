@@ -1,0 +1,44 @@
+{
+  "expo": {
+    "name": "Maalausyritys",
+    "slug": "maalausyritys-app",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "light",
+    "newArchEnabled": true,
+    "scheme": "maalausyritys",
+    "splash": {
+      "image": "./assets/splash-icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#FFD700"
+    },
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.maalausyritys.app"
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#FFD700"
+      },
+      "edgeToEdgeEnabled": true,
+      "package": "com.maalausyritys.app"
+    },
+    "web": {
+      "favicon": "./assets/favicon.png",
+      "bundler": "metro"
+    },
+    "plugins": [
+      "expo-router",
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/icon.png",
+          "color": "#FFD700"
+        }
+      ],
+      "expo-font"
+    ]
+  }
+}

@@ -1,0 +1,16 @@
+[project]
+id = "your-project-id"
+
+[db]
+port = 54322
+
+[studio]
+port = 54323
+
+[auth]
+site_url = "http://localhost:8081"
+additional_redirect_urls = ["exp://localhost:8081"]
+
+[auth.email]
+enable_signup = true
+enable_confirmations = false

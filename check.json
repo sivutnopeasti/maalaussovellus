@@ -1,0 +1,10 @@
+﻿[
+    {
+        "email":  "admin@maalausyritys.fi",
+        "full_name":  "Ylläpitäjä"
+    },
+    {
+        "email":  "asiakas@testi.fi",
+        "full_name":  "Matti Meikäläinen"
+    }
+]
