@@ -125,6 +125,7 @@ export async function calculatePreciseMeasurement(
       ...basic,
       depthCorrectionFactor: 1,
       perspectiveCorrectionFactor: 1,
+      vanishingPointCorrectionFactor: 1,
       dominantLineAngleDeg: null,
       method: "basic",
     };
@@ -153,6 +154,7 @@ export async function calculatePreciseMeasurement(
       ...basic,
       depthCorrectionFactor: 1,
       perspectiveCorrectionFactor: 1,
+      vanishingPointCorrectionFactor: 1,
       dominantLineAngleDeg: null,
       method: "basic",
     };
