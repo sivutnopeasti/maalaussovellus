@@ -72,8 +72,12 @@ export default function HomePage() {
         throw new Error(e.error ?? "Syvyyskartan luominen epäonnistui.");
       }
 
-      const segData: { masks: MaskResult[]; wallHints: BBoxHint[]; openingHints: BBoxHint[] } =
-        await segRes.json();
+      const segData: {
+        masks: MaskResult[];
+        wallHints: BBoxHint[];
+        openingHints: BBoxHint[];
+        ignoreHints: BBoxHint[];
+      } = await segRes.json();
       const { depthMapUrl }: { depthMapUrl: string } = await depthRes.json();
 
       const session: AnalysisSession = {
@@ -85,6 +89,7 @@ export default function HomePage() {
         depthMapUrl,
         wallHints: segData.wallHints ?? [],
         openingHints: segData.openingHints ?? [],
+        ignoreHints: segData.ignoreHints ?? [],
       };
 
       sessionStorage.setItem("facadeSession", JSON.stringify(session));

@@ -21,23 +21,31 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Run all three in parallel for speed:
-    // 1. SAM 2 auto-segment — pixel-perfect masks for every region
-    // 2. SAM 3 "wall" — semantic bounding boxes for exterior wall surfaces
-    // 3. SAM 3 "window door" — semantic bounding boxes for openings
-    const [sam2Result, sam3WallResult, sam3OpeningResult] = await Promise.all([
-      runSam2AutoSegment(imageUrl),
-      runSam3Prompted(
-        imageUrl,
-        "exterior wall, house wall, painted wall surface, facade",
-        8,
-      ).catch(() => ({ masks: [], boxes: [], metadata: [] } as Sam3Output)),
-      runSam3Prompted(
-        imageUrl,
-        "window, door, glass opening, entrance",
-        8,
-      ).catch(() => ({ masks: [], boxes: [], metadata: [] } as Sam3Output)),
-    ]);
+    // Run all four in parallel:
+    // 1. SAM 2 auto-segment — pixel-perfect masks for all regions
+    // 2. SAM 3 wall prompt — wooden siding / painted plank surfaces specifically
+    // 3. SAM 3 opening prompt — windows and doors
+    // 4. SAM 3 ignore prompt — roof, sky, grass, ground, vegetation (force-ignore)
+    const empty: Sam3Output = { masks: [], boxes: [], metadata: [] };
+    const [sam2Result, sam3WallResult, sam3OpeningResult, sam3IgnoreResult] =
+      await Promise.all([
+        runSam2AutoSegment(imageUrl),
+        runSam3Prompted(
+          imageUrl,
+          "wooden wall cladding, wood siding, painted wood planks, horizontal boards, house wall surface",
+          8,
+        ).catch(() => empty),
+        runSam3Prompted(
+          imageUrl,
+          "window, door, glass opening, entrance door",
+          8,
+        ).catch(() => empty),
+        runSam3Prompted(
+          imageUrl,
+          "roof, roof tiles, roof panels, sky, grass, lawn, ground, soil, vegetation, tree, bush, fence",
+          10,
+        ).catch(() => empty),
+      ]);
 
     const masks: MaskResult[] = sam2Result.individual_masks.map((img, idx) => ({
       index: idx,
@@ -47,12 +55,16 @@ export async function POST(req: NextRequest) {
       category: "ignored" as const,
     }));
 
-    // Convert SAM 3 box arrays to BBoxHint objects
     const toHints = (
       boxes?: number[][] | null,
       metadata?: { score?: number; box?: number[] }[] | null,
     ): BBoxHint[] => {
-      const src = boxes ?? metadata?.map((m) => m.box ?? []).filter((b) => b.length === 4) ?? [];
+      const src =
+        boxes ??
+        metadata
+          ?.map((m) => m.box ?? [])
+          .filter((b) => b.length === 4) ??
+        [];
       return src
         .filter((b) => Array.isArray(b) && b.length === 4)
         .map((b, i) => ({
@@ -61,17 +73,12 @@ export async function POST(req: NextRequest) {
         }));
     };
 
-    const wallHints = toHints(sam3WallResult.boxes, sam3WallResult.metadata);
-    const openingHints = toHints(
-      sam3OpeningResult.boxes,
-      sam3OpeningResult.metadata,
-    );
-
     return NextResponse.json({
       masks,
       combinedMaskUrl: sam2Result.combined_mask.url,
-      wallHints,
-      openingHints,
+      wallHints: toHints(sam3WallResult.boxes, sam3WallResult.metadata),
+      openingHints: toHints(sam3OpeningResult.boxes, sam3OpeningResult.metadata),
+      ignoreHints: toHints(sam3IgnoreResult.boxes, sam3IgnoreResult.metadata),
     });
   } catch (err) {
     console.error("[/api/segment]", err);

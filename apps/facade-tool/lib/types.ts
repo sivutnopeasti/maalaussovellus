@@ -41,6 +41,8 @@ export interface AnalysisSession {
   wallHints: BBoxHint[];
   /** SAM 3 text-detected opening regions (normalized bboxes) */
   openingHints: BBoxHint[];
+  /** SAM 3 text-detected ignore regions: roof, sky, grass, ground */
+  ignoreHints: BBoxHint[];
 }
 
 export interface MeasurementResult {

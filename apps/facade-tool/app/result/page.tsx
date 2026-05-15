@@ -65,6 +65,7 @@ export default function ResultPage() {
       imageHeight: s.imageHeight,
       wallHints: s.wallHints ?? [],
       openingHints: s.openingHints ?? [],
+      ignoreHints: s.ignoreHints ?? [],
       depthMapUrl: s.depthMapUrl,
       imageUrl: s.uploadedImageUrl,
     })
