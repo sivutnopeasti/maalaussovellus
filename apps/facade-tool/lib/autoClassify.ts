@@ -207,13 +207,22 @@ interface MaskStats {
   maxY: number;
 }
 
+/** True when mask uses alpha channel (apply_mask=true). False for binary brightness masks. */
+function isMaskAlphaBased(data: Uint8ClampedArray): boolean {
+  for (let i = 3; i < Math.min(data.length, 800); i += 4) {
+    if (data[i] < 10) return true;
+  }
+  return false;
+}
+
 function computeMaskStats(data: Uint8ClampedArray, w: number, h: number): MaskStats {
+  const alphaMode = isMaskAlphaBased(data);
   let count = 0, sumX = 0, sumY = 0;
   let minX = w, minY = h, maxX = 0, maxY = 0;
   for (let y = 0; y < h; y++) {
     for (let x = 0; x < w; x++) {
       const idx = (y * w + x) * 4;
-      if (data[idx] > 127 || data[idx + 3] > 127) {
+      if (alphaMode ? data[idx + 3] > 127 : data[idx] > 127) {
         count++;
         sumX += x; sumY += y;
         if (x < minX) minX = x;
@@ -264,11 +273,12 @@ function sampleAvgDepth(
   maskData: Uint8ClampedArray, mW: number, mH: number,
   depthData: Uint8ClampedArray, dW: number, dH: number,
 ): number {
+  const alphaMode = isMaskAlphaBased(maskData);
   let sum = 0, n = 0;
   for (let y = 0; y < mH; y += 2) {
     for (let x = 0; x < mW; x += 2) {
       const idx = (y * mW + x) * 4;
-      if (maskData[idx] > 127 || maskData[idx + 3] > 127) {
+      if (alphaMode ? maskData[idx + 3] > 127 : maskData[idx] > 127) {
         const dx = Math.min(Math.round(x * dW / mW), dW - 1);
         const dy = Math.min(Math.round(y * dH / mH), dH - 1);
         sum += depthData[(dy * dW + dx) * 4];
@@ -289,12 +299,13 @@ function sampleColorStats(
   maskData: Uint8ClampedArray, mW: number, mH: number,
   origData: Uint8ClampedArray, oW: number, oH: number,
 ): ColorStats {
+  const alphaMode = isMaskAlphaBased(maskData);
   let sumR = 0, sumG = 0, sumB = 0, sumBr = 0, n = 0;
   const samples: number[] = [];
   for (let y = 0; y < mH; y += 3) {
     for (let x = 0; x < mW; x += 3) {
       const midx = (y * mW + x) * 4;
-      if (maskData[midx] > 127 || maskData[midx + 3] > 127) {
+      if (alphaMode ? maskData[midx + 3] > 127 : maskData[midx] > 127) {
         const ox = Math.min(Math.round(x * oW / mW), oW - 1);
         const oy = Math.min(Math.round(y * oH / mH), oH - 1);
         const oi = (oy * oW + ox) * 4;

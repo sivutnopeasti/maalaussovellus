@@ -35,9 +35,10 @@ export function countMaskPixels(maskUrl: string): Promise<number> {
       const ctx = c.getContext("2d")!;
       ctx.drawImage(img, 0, 0);
       const { data } = ctx.getImageData(0, 0, c.width, c.height);
+      const hasTransparent = detectTransparentMask(data);
       let count = 0;
       for (let i = 0; i < data.length; i += 4) {
-        if (data[i] > 127 || data[i + 3] > 127) count++;
+        if (hasTransparent ? data[i + 3] > 127 : data[i] > 127) count++;
       }
       resolve(count);
     };
@@ -313,6 +314,21 @@ export async function depthCorrectedArea(
 // ─── Internal helpers ─────────────────────────────────────────────────────────
 
 /**
+ * Returns true when the mask image uses the alpha channel to encode selection
+ * (apply_mask=true style: transparent = outside mask).
+ * Returns false for binary grayscale masks (apply_mask=false: black = outside).
+ *
+ * Heuristic: scan the first ~200 pixels for any fully transparent pixel.
+ * Binary masks are solid PNGs (alpha=255 everywhere), so no transparent pixels.
+ */
+function detectTransparentMask(data: Uint8ClampedArray): boolean {
+  for (let i = 3; i < Math.min(data.length, 800); i += 4) {
+    if (data[i] < 10) return true;
+  }
+  return false;
+}
+
+/**
  * Sum depth + vanishing-point weighted pixel contributions from a list of masks.
  *
  * Each pixel's contribution = depth_weight × vp_weight
@@ -349,10 +365,11 @@ async function sumDepthWeightedPixels(
       const mW = mc.width;
       const mH = mc.height;
 
+      const hasTransparent = detectTransparentMask(mData);
       for (let y = 0; y < mH; y++) {
         for (let x = 0; x < mW; x++) {
           const mi = (y * mW + x) * 4;
-          if (mData[mi] > 127 || mData[mi + 3] > 127) {
+          if (hasTransparent ? mData[mi + 3] > 127 : mData[mi] > 127) {
             // ── Depth correction ──────────────────────────────────────────
             const dx = Math.min(Math.round((x / mW) * dW), dW - 1);
             const dy = Math.min(Math.round((y / mH) * dH), dH - 1);
@@ -624,9 +641,10 @@ export async function calculatePolygonMeasurement(
     try {
       const mc = await loadImageToCanvas(mask.url);
       const data = mc.getContext("2d")!.getImageData(0, 0, mc.width, mc.height).data;
+      const hasTransparent = detectTransparentMask(data);
       let rawCount = 0;
       for (let i = 0; i < data.length; i += 4) {
-        if (data[i] > 127 || data[i + 3] > 127) rawCount++;
+        if (hasTransparent ? data[i + 3] > 127 : data[i] > 127) rawCount++;
       }
       // Scale from mask resolution to original image resolution
       const scaleFactor = (imageWidth * imageHeight) / (mc.width * mc.height);
