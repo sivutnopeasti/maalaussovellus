@@ -96,6 +96,7 @@ export default function ResultPage() {
           session.imageWidth,
           session.imageHeight,
           session.reference,
+          session.depthMapUrl,  // enables vertical perspective correction
         );
         setMeasurement(result);
       } else {
@@ -542,7 +543,7 @@ export default function ResultPage() {
                       </div>
                       <div className="border-t border-green-200 pt-1 space-y-0.5 text-xs text-slate-500">
                         <div className="flex justify-between">
-                          <span>Syvyyskorjaus</span>
+                          <span>Syvyyskorjaus (pystysuunta)</span>
                           <span>{measurement.depthCorrectionFactor.toFixed(3)}×</span>
                         </div>
                         {measurement.vanishingPointCorrectionFactor !== 1 && (

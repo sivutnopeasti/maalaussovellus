@@ -505,14 +505,24 @@ function extractDominantLineAngle(
 }
 
 /**
- * Polygon-based area measurement using the Shoelace formula.
+ * Polygon-based area measurement with full perspective correction.
  *
  * The user draws a polygon around the exact facade outline (corners + roof ridge).
- * Area = Shoelace(polygon) / pixelsPerMeter²
- * Perspective correction = 1/cos(referenceLineAngle) — derived from the reference line
- * that was drawn along a known-horizontal board.
  *
- * Opening areas (windows/doors from SAM 3) are subtracted from the gross polygon area.
+ * TWO perspective corrections are applied automatically:
+ *
+ * 1. HORIZONTAL (side-angle) — from reference line angle:
+ *    If the board is tilted θ degrees in the image, the facade is viewed from
+ *    that angle → horizontal foreshortening → multiply by 1/cos(θ).
+ *
+ * 2. VERTICAL (camera tilt) — from depth map, per-pixel:
+ *    When the camera tilts upward, the top of the wall is farther away and
+ *    appears compressed. For each pixel inside the polygon, weight =
+ *    (refDepth / pixelDepth)². This corrects for both camera tilt AND any
+ *    curvature/relief of the surface.
+ *    Falls back to Shoelace formula if depth map unavailable.
+ *
+ * Opening areas (windows/doors from SAM 3) are subtracted, also depth-weighted.
  */
 export async function calculatePolygonMeasurement(
   polygonPoints: Point[],
@@ -520,21 +530,11 @@ export async function calculatePolygonMeasurement(
   imageWidth: number,
   imageHeight: number,
   reference: ReferenceData,
+  depthMapUrl?: string,
 ): Promise<PreciseMeasurementResult> {
   const ppm = reference.pixelsPerMeter;
 
-  // ── Shoelace area in image pixel² ─────────────────────────────────────────
-  let area = 0;
-  const n = polygonPoints.length;
-  for (let i = 0; i < n; i++) {
-    const j = (i + 1) % n;
-    area += polygonPoints[i].x * polygonPoints[j].y;
-    area -= polygonPoints[j].x * polygonPoints[i].y;
-  }
-  const grossPixels = Math.abs(area) / 2;
-  const grossAreaM2raw = grossPixels / (ppm * ppm);
-
-  // ── Perspective correction from reference line angle ──────────────────────
+  // ── 1. Horizontal perspective correction from reference line angle ─────────
   const angleDeg = reference.angleDeg ?? 0;
   let perspectiveCorrectionFactor = 1;
   if (Math.abs(angleDeg) > 1) {
@@ -543,10 +543,81 @@ export async function calculatePolygonMeasurement(
       perspectiveCorrectionFactor = Math.max(0.5, Math.min(2.5, 1 / cosTheta));
     }
   }
-  const grossAreaM2 = grossAreaM2raw * perspectiveCorrectionFactor;
 
-  // ── Opening areas (from SAM 3 masks) ─────────────────────────────────────
-  // Scale opening pixel counts from mask resolution to original image resolution.
+  // ── 2. Rasterise polygon into a canvas mask ────────────────────────────────
+  // We sample every STRIDE pixels for performance on large images.
+  const STRIDE = 2; // sample every 2nd pixel → 4× speed, negligible accuracy loss
+  const polyCanvas = document.createElement("canvas");
+  polyCanvas.width = imageWidth;
+  polyCanvas.height = imageHeight;
+  const polyCtx = polyCanvas.getContext("2d")!;
+  polyCtx.fillStyle = "white";
+  polyCtx.beginPath();
+  polyCtx.moveTo(polygonPoints[0].x, polygonPoints[0].y);
+  for (let i = 1; i < polygonPoints.length; i++) {
+    polyCtx.lineTo(polygonPoints[i].x, polygonPoints[i].y);
+  }
+  polyCtx.closePath();
+  polyCtx.fill();
+  const polyData = polyCtx.getImageData(0, 0, imageWidth, imageHeight).data;
+
+  // ── 3. Depth-weighted pixel integration ───────────────────────────────────
+  let grossWeightedPixels = 0;
+  let grossRawPixels = 0;
+  let depthCorrectionFactor = 1;
+
+  if (depthMapUrl) {
+    try {
+      const depthCanvas = await loadImageToCanvas(depthMapUrl);
+      const dCtx = depthCanvas.getContext("2d")!;
+      const depthData = dCtx.getImageData(0, 0, depthCanvas.width, depthCanvas.height).data;
+      const dW = depthCanvas.width;
+      const dH = depthCanvas.height;
+
+      // Reference depth = average depth along the user's drawn reference line
+      const refDepth = sampleLineDepth(depthData, dW, reference.point1, reference.point2);
+
+      if (refDepth >= 1) {
+        for (let y = 0; y < imageHeight; y += STRIDE) {
+          for (let x = 0; x < imageWidth; x += STRIDE) {
+            if (polyData[(y * imageWidth + x) * 4] < 128) continue; // outside polygon
+            grossRawPixels += STRIDE * STRIDE;
+
+            const dx = Math.min(Math.round((x / imageWidth) * dW), dW - 1);
+            const dy = Math.min(Math.round((y / imageHeight) * dH), dH - 1);
+            const pixelDepth = depthData[(dy * dW + dx) * 4];
+            // depth weight: farther pixels (lower value) get larger weight
+            const w = pixelDepth > 0
+              ? Math.max(0.1, Math.min(4.0, (refDepth / pixelDepth) ** 2))
+              : 1;
+            grossWeightedPixels += w * STRIDE * STRIDE;
+          }
+        }
+        depthCorrectionFactor =
+          grossRawPixels > 0 ? grossWeightedPixels / grossRawPixels : 1;
+      }
+    } catch {
+      // depth unavailable → fall through to Shoelace below
+    }
+  }
+
+  // Fallback: Shoelace formula if depth integration didn't run
+  if (grossRawPixels === 0) {
+    let area = 0;
+    const n = polygonPoints.length;
+    for (let i = 0; i < n; i++) {
+      const j = (i + 1) % n;
+      area += polygonPoints[i].x * polygonPoints[j].y;
+      area -= polygonPoints[j].x * polygonPoints[i].y;
+    }
+    grossRawPixels = Math.abs(area) / 2;
+    grossWeightedPixels = grossRawPixels;
+  }
+
+  const grossAreaM2 =
+    (grossWeightedPixels / (ppm * ppm)) * perspectiveCorrectionFactor;
+
+  // ── 4. Opening areas (SAM 3 masks) — also depth-weighted ─────────────────
   const openingMasks = masks.filter((m) => m.category === "opening");
   let openingPixelsScaled = 0;
   for (const mask of openingMasks) {
@@ -557,27 +628,33 @@ export async function calculatePolygonMeasurement(
       for (let i = 0; i < data.length; i += 4) {
         if (data[i] > 127 || data[i + 3] > 127) rawCount++;
       }
-      // Scale: mask is (mc.width × mc.height), original is (imageWidth × imageHeight)
+      // Scale from mask resolution to original image resolution
       const scaleFactor = (imageWidth * imageHeight) / (mc.width * mc.height);
       openingPixelsScaled += rawCount * scaleFactor;
     } catch {
-      // skip unloadable masks
+      // skip
     }
   }
-  const openingAreaM2 = (openingPixelsScaled / (ppm * ppm)) * perspectiveCorrectionFactor;
+  // Apply same depth correction factor (approximate — openings are at similar depth as wall)
+  const openingAreaM2 =
+    (openingPixelsScaled / (ppm * ppm)) * depthCorrectionFactor * perspectiveCorrectionFactor;
   const netAreaM2 = Math.max(grossAreaM2 - openingAreaM2, 0);
 
+  const method = depthMapUrl && grossRawPixels > 0
+    ? Math.abs(angleDeg) > 1 ? "depth+perspective" : "depth"
+    : Math.abs(angleDeg) > 1 ? "depth+perspective" : "basic";
+
   return {
-    wallPixels: grossPixels,
+    wallPixels: grossRawPixels,
     openingPixels: openingPixelsScaled,
-    netWallPixels: Math.max(grossPixels - openingPixelsScaled, 0),
+    netWallPixels: Math.max(grossRawPixels - openingPixelsScaled, 0),
     pixelsPerMeter: ppm,
     wallAreaM2: netAreaM2,
-    depthCorrectionFactor: 1,
+    depthCorrectionFactor,
     perspectiveCorrectionFactor,
     dominantLineAngleDeg: Math.abs(angleDeg) > 1 ? angleDeg : null,
     vanishingPointCorrectionFactor: 1,
-    method: Math.abs(angleDeg) > 1 ? "depth+perspective" : "basic",
+    method,
   };
 }
 
