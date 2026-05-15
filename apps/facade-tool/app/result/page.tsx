@@ -231,24 +231,21 @@ export default function ResultPage() {
           )}
 
           <div className="grid grid-cols-1 lg:grid-cols-5 gap-6">
-            {/* Left — original + visualized images */}
+            {/* Left — original image + visualization */}
             <div className="lg:col-span-3 space-y-4">
-              <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden shadow-sm">
-                <div className="px-4 py-3 border-b border-slate-100 flex items-center justify-between">
-                  <span className="text-sm font-medium text-slate-700">
-                    Alkuperäinen kuva
-                  </span>
-                  <span className="text-xs text-slate-400">
-                    {session.imageWidth} × {session.imageHeight} px
-                  </span>
+              {/* Original image — hidden once visualization is ready */}
+              {!visualizedUrl && (
+                <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden shadow-sm">
+                  <div className="px-4 py-3 border-b border-slate-100 flex items-center justify-between">
+                    <span className="text-sm font-medium text-slate-700">Alkuperäinen kuva</span>
+                    <span className="text-xs text-slate-400">
+                      {session.imageWidth} × {session.imageHeight} px
+                    </span>
+                  </div>
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img src={session.uploadedImageUrl} alt="Alkuperäinen julkisivu" className="w-full" />
                 </div>
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img
-                  src={session.uploadedImageUrl}
-                  alt="Alkuperäinen julkisivu"
-                  className="w-full"
-                />
-              </div>
+              )}
 
               {visualizedUrl && (
                 <div className="bg-white rounded-2xl border border-blue-200 overflow-hidden shadow-sm">
@@ -303,6 +300,7 @@ export default function ResultPage() {
                   originalImageUrl={session.uploadedImageUrl}
                   imageWidth={session.imageWidth}
                   imageHeight={session.imageHeight}
+                  isAutoClassifying={isAutoClassifying}
                   onMasksUpdated={handleMasksUpdated}
                 />
                 {canCalculate && (
