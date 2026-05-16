@@ -249,7 +249,6 @@ export default function ResultPage() {
                     setOpenPanel("measure");
                   }}
                   reference={session.reference}
-                  depthMapUrl={session.depthMapUrl}
                 />
                 {hasPolygon && (
                   <button
