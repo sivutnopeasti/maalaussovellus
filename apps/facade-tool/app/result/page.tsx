@@ -32,10 +32,10 @@ export default function ResultPage() {
   const [isMeasuring, setIsMeasuring] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // Keystone (vertical) correction uses the vanishing point or sensor tilt — reliable for tilted photos
-  // Perspective correction (reference-line angle) handles side-angle / horizontal foreshortening
+  // Keystone (vertical) correction uses the vanishing point or sensor tilt — reliable for tilted photos.
+  // The customer is instructed to photograph the wall head-on (from the center) so no horizontal
+  // perspective correction is applied.
   const [useKeystoneCorrection, setUseKeystoneCorrection] = useState(true);
-  const [usePerspectiveCorrection, setUsePerspectiveCorrection] = useState(true);
 
   useEffect(() => {
     const raw = sessionStorage.getItem("facadeSession");
@@ -69,7 +69,6 @@ export default function ResultPage() {
         {
           mlsdMapUrl: session.mlsdMapUrl,
           useKeystoneCorrection,
-          usePerspectiveCorrection,
           sensorTiltBetaDeg: session.captureTilt?.cameraTiltDeg ?? null,
         },
       );
@@ -269,15 +268,11 @@ export default function ResultPage() {
                 subtitle={
                   measurement
                     ? `${measurement.wallAreaM2.toFixed(1)} m² — ${
-                        measurement.method === "perspective+keystone"
-                          ? "täysi perspektiivikorjaus"
-                          : measurement.method === "keystone"
-                            ? "pystyperspektiivi korjattu"
-                            : measurement.method === "perspective"
-                              ? "vaakaperspektiivi korjattu"
-                              : "peruslaskenta"
+                        measurement.method === "keystone"
+                          ? "pystyperspektiivi korjattu"
+                          : "ei korjausta tarvittu"
                       }`
-                    : hasPolygon ? "Monikulmio + perspektiivikorjaus" : "Piirrä ensin rajaus"
+                    : hasPolygon ? "Monikulmio + pystyperspektiivin korjaus" : "Piirrä ensin rajaus"
                 }
                 isOpen={openPanel === "measure"}
                 isDone={!!measurement}
@@ -297,25 +292,11 @@ export default function ResultPage() {
                     </div>
                   )}
 
-                  {/* Reference + correction badges */}
-                  <div className="p-3 bg-slate-50 rounded-xl text-xs text-slate-600 space-y-1">
-                    <p>
-                      <strong>Referenssi:</strong> {session.reference.meters} m
-                      = {session.reference.pixelDistance.toFixed(0)} px (
-                      {session.reference.pixelsPerMeter.toFixed(1)} px/m)
-                    </p>
-                    <div className="flex gap-2 mt-1 flex-wrap">
-                      <span className={`px-1.5 py-0.5 rounded text-xs font-medium ${
-                        session.depthMapUrl ? "bg-blue-100 text-blue-700" : "bg-slate-200 text-slate-500"
-                      }`}>
-                        Syvyyskartta {session.depthMapUrl ? "✓" : "✗"}
-                      </span>
-                      <span className={`px-1.5 py-0.5 rounded text-xs font-medium ${
-                        session.mlsdMapUrl ? "bg-indigo-100 text-indigo-700" : "bg-slate-200 text-slate-500"
-                      }`}>
-                        MLSD-viivat {session.mlsdMapUrl ? "✓" : "✗"}
-                      </span>
-                    </div>
+                  {/* Reference info */}
+                  <div className="p-3 bg-slate-50 rounded-xl text-xs text-slate-600">
+                    <strong>Referenssi:</strong> {session.reference.meters} m
+                    = {session.reference.pixelDistance.toFixed(0)} px (
+                    {session.reference.pixelsPerMeter.toFixed(1)} px/m)
                   </div>
 
                   {/* Capture tilt badge (if photo was taken with in-app camera) */}
@@ -329,16 +310,15 @@ export default function ResultPage() {
                     </div>
                   )}
 
-                  {/* Correction toggles */}
+                  {/* Keystone toggle */}
                   <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl space-y-2">
-                    <p className="text-xs font-medium text-amber-800">Automaattiset korjaukset</p>
+                    <p className="text-xs font-medium text-amber-800">Pystyperspektiivin korjaus</p>
                     <p className="text-xs text-amber-700">
-                      Korjaukset on järkevää pitää päällä — sovellus jättää ne huomiotta jos kuva on jo suora.
+                      Korjaa puhelimen kallistuksen aiheuttaman vääristymän kun harja on otettu mukaan kuvaan ylhäältä päin.
                     </p>
                     <label className="flex items-center justify-between gap-2 cursor-pointer">
                       <span className="text-xs text-slate-700">
-                        Pystyperspektiivi
-                        <span className="text-slate-400"> (kallistus ylös/alas)</span>
+                        Automaattinen pystyperspektiivin korjaus
                       </span>
                       <button
                         onClick={() => setUseKeystoneCorrection((v) => !v)}
@@ -348,22 +328,6 @@ export default function ResultPage() {
                       >
                         <span className={`absolute top-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform ${
                           useKeystoneCorrection ? "translate-x-5" : "translate-x-0.5"
-                        }`} />
-                      </button>
-                    </label>
-                    <label className="flex items-center justify-between gap-2 cursor-pointer">
-                      <span className="text-xs text-slate-700">
-                        Vaakaperspektiivi
-                        <span className="text-slate-400"> (referenssilinjan kulma)</span>
-                      </span>
-                      <button
-                        onClick={() => setUsePerspectiveCorrection((v) => !v)}
-                        className={`relative w-10 h-5 rounded-full transition-colors ${
-                          usePerspectiveCorrection ? "bg-indigo-500" : "bg-slate-300"
-                        }`}
-                      >
-                        <span className={`absolute top-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform ${
-                          usePerspectiveCorrection ? "translate-x-5" : "translate-x-0.5"
                         }`} />
                       </button>
                     </label>
@@ -401,21 +365,10 @@ export default function ResultPage() {
                             </span>
                           </div>
                         )}
-                        {Math.abs(measurement.depthCorrectionFactor - 1) > 0.001 && (
+                        {Math.abs(measurement.keystoneCorrectionFactor - 1) > 0.001 && (
                           <div className="flex justify-between">
                             <span>Keystone-kerroin</span>
-                            <span>{measurement.depthCorrectionFactor.toFixed(3)}×</span>
-                          </div>
-                        )}
-                        {measurement.perspectiveCorrectionFactor !== 1 && (
-                          <div className="flex justify-between">
-                            <span>Vaakaperspektiivi</span>
-                            <span>
-                              {measurement.perspectiveCorrectionFactor.toFixed(3)}×
-                              {measurement.dominantLineAngleDeg !== null && (
-                                <span className="text-slate-400"> ({measurement.dominantLineAngleDeg.toFixed(1)}°)</span>
-                              )}
-                            </span>
+                            <span>{measurement.keystoneCorrectionFactor.toFixed(3)}×</span>
                           </div>
                         )}
                         <div className="flex justify-between font-medium text-slate-600">

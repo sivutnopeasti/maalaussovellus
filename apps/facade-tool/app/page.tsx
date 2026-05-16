@@ -181,6 +181,30 @@ export default function HomePage() {
                 </div>
                 <h2 className="font-semibold text-slate-800">Lataa julkisivukuva</h2>
               </div>
+
+              {step === "upload" && (
+                <div className="p-4 bg-blue-50 border border-blue-200 rounded-xl space-y-2 text-sm">
+                  <p className="font-semibold text-blue-800">Kuvausohjeet — tarkka mittaus</p>
+                  <ul className="text-blue-700 space-y-1 list-disc pl-5 text-xs">
+                    <li>
+                      <strong>Asetu seinän keskikohtaan</strong>, noin kohtisuoraan seinään nähden.
+                      Älä ota kuvaa kulmasta tai vinosti — se aiheuttaa mittavirheitä.
+                    </li>
+                    <li>
+                      <strong>Astu tarpeeksi kauas</strong> jotta koko seinä mahtuu kuvaan,
+                      myös harja jos talossa on harjakatto.
+                    </li>
+                    <li>
+                      <strong>Pidä puhelin vaakasuorassa</strong> (älä kallista ylös). Jos käytät
+                      sovelluksen kameraa, vesivaaka auttaa tämän kanssa.
+                    </li>
+                    <li>
+                      Yhdellä kerralla mitataan <strong>yksi seinä</strong>.
+                    </li>
+                  </ul>
+                </div>
+              )}
+
               <ImageUpload
                 onImageSelected={handleImageSelected}
                 previewUrl={imageDataUrl || undefined}
@@ -206,9 +230,9 @@ export default function HomePage() {
                 <h2 className="font-semibold text-slate-800">Aseta referenssimitta</h2>
               </div>
               <p className="text-sm text-slate-500">
-                Piirrä viiva pitkin talon <strong>alinta lautaa</strong> tai muuta
-                vaakasuoraa rakennetta. Viiva antaa mittakaavan ja perspektiivikorjauksen.
-                Talon rajat merkitään seuraavassa vaiheessa automaattisesti.
+                Piirrä viiva pitkin <strong>tunnetun mittaista vaakasuoraa</strong> rakennetta —
+                esim. ulko-oven leveys (n. 0,9 m), ikkunan leveys, alin lauta tai sokkelin reuna.
+                Viiva antaa mittakaavan koko kuvalle.
               </p>
               <ReferenceMeasure
                 imageDataUrl={imageDataUrl}

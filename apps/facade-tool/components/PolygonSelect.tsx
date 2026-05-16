@@ -10,14 +10,6 @@ interface Props {
   imageHeight: number;
   onPolygonSet: (data: PolygonData) => void;
   reference?: ReferenceData;
-  depthMapUrl?: string;
-}
-
-interface DepthCache {
-  data: Uint8ClampedArray;
-  width: number;
-  height: number;
-  refDepth: number;
 }
 
 type Phase = "drawing" | "done";
@@ -28,18 +20,14 @@ export default function PolygonSelect({
   imageHeight,
   onPolygonSet,
   reference,
-  depthMapUrl,
 }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const imageRef = useRef<HTMLImageElement | null>(null);
-  const depthRef = useRef<DepthCache | null>(null);
   const [points, setPoints] = useState<Point[]>([]);
   const [canvasSize, setCanvasSize] = useState({ w: 0, h: 0 });
   const [scale, setScale] = useState(1);
   const [phase, setPhase] = useState<Phase>("drawing");
-  const [depthReady, setDepthReady] = useState(false);
 
-  // Load main image
   useEffect(() => {
     const img = new Image();
     img.crossOrigin = "anonymous";
@@ -54,60 +42,19 @@ export default function PolygonSelect({
     img.src = imageUrl;
   }, [imageUrl]);
 
-  // Load depth map for segment length display
-  useEffect(() => {
-    if (!depthMapUrl || !reference) return;
-    depthRef.current = null;
-    setDepthReady(false);
-    const img = new Image();
-    img.crossOrigin = "anonymous";
-    img.onload = () => {
-      const c = document.createElement("canvas");
-      c.width = img.width;
-      c.height = img.height;
-      const ctx = c.getContext("2d")!;
-      ctx.drawImage(img, 0, 0);
-      const { data } = ctx.getImageData(0, 0, img.width, img.height);
-      const sx = img.width / imageWidth;
-      const sy = img.height / imageHeight;
-      const p1 = { x: reference.point1.x * sx, y: reference.point1.y * sy };
-      const p2 = { x: reference.point2.x * sx, y: reference.point2.y * sy };
-      const steps = Math.max(Math.abs(p2.x - p1.x), Math.abs(p2.y - p1.y), 1);
-      let sum = 0, n = 0;
-      for (let t = 0; t <= steps; t++) {
-        const x = Math.round(p1.x + (p2.x - p1.x) * t / steps);
-        const y = Math.round(p1.y + (p2.y - p1.y) * t / steps);
-        if (x >= 0 && y >= 0 && x < img.width && y < img.height) {
-          sum += data[(y * img.width + x) * 4];
-          n++;
-        }
-      }
-      depthRef.current = { data, width: img.width, height: img.height, refDepth: n > 0 ? sum / n : 128 };
-      setDepthReady(true);
-    };
-    img.src = depthMapUrl;
-  }, [depthMapUrl, reference, imageWidth, imageHeight]);
-
-  const getSegmentLength = useCallback((a: Point, b: Point): number | null => {
-    if (!reference || reference.pixelsPerMeter <= 0) return null;
-    const dx = b.x - a.x;
-    const dy = b.y - a.y;
-    const pixLen = Math.sqrt(dx * dx + dy * dy);
-    const rawMeters = pixLen / reference.pixelsPerMeter;
-    const dc = depthRef.current;
-    if (!dc || dc.refDepth < 1) return rawMeters;
-    const N = Math.max(8, Math.round(pixLen / 8));
-    let corrSum = 0;
-    for (let t = 0; t <= N; t++) {
-      const px = a.x + dx * t / N;
-      const py = a.y + dy * t / N;
-      const dpx = Math.min(Math.round(px / imageWidth * dc.width), dc.width - 1);
-      const dpy = Math.min(Math.round(py / imageHeight * dc.height), dc.height - 1);
-      const d = dc.data[(dpy * dc.width + dpx) * 4];
-      corrSum += d > 0 ? Math.max(0.2, Math.min(5.0, dc.refDepth / d)) : 1;
-    }
-    return rawMeters * (corrSum / (N + 1));
-  }, [reference, imageWidth, imageHeight, depthReady]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Segment length = raw pixel distance / pixelsPerMeter.
+  // Photos are taken head-on (perpendicular to the wall) so no perspective
+  // correction is needed for individual line segments.
+  const getSegmentLength = useCallback(
+    (a: Point, b: Point): number | null => {
+      if (!reference || reference.pixelsPerMeter <= 0) return null;
+      const dx = b.x - a.x;
+      const dy = b.y - a.y;
+      const pixLen = Math.sqrt(dx * dx + dy * dy);
+      return pixLen / reference.pixelsPerMeter;
+    },
+    [reference],
+  );
 
   const redraw = useCallback(() => {
     const canvas = canvasRef.current;
@@ -121,7 +68,6 @@ export default function PolygonSelect({
     const sx = (p: Point) => p.x * scale;
     const sy = (p: Point) => p.y * scale;
 
-    // Polygon fill + outline
     if (points.length >= 3) {
       ctx.beginPath();
       ctx.moveTo(sx(points[0]), sy(points[0]));
@@ -143,7 +89,6 @@ export default function PolygonSelect({
       ctx.stroke();
     }
 
-    // Segment length labels
     if (points.length >= 2 && reference) {
       const closed = points.length >= 3;
       const segCount = closed ? points.length : points.length - 1;
@@ -166,8 +111,10 @@ export default function PolygonSelect({
         ctx.textBaseline = "middle";
         const tw = ctx.measureText(label).width;
         const pad = 4;
-        const bx = tx - tw / 2 - pad, by = ty - fontSize / 2 - pad / 2;
-        const bw = tw + pad * 2, bh = fontSize + pad;
+        const bx = tx - tw / 2 - pad;
+        const by = ty - fontSize / 2 - pad / 2;
+        const bw = tw + pad * 2;
+        const bh = fontSize + pad;
         ctx.beginPath();
         ctx.roundRect(bx, by, bw, bh, 4);
         ctx.fillStyle = "rgba(0,0,0,0.68)";
@@ -178,7 +125,6 @@ export default function PolygonSelect({
       }
     }
 
-    // Corner dots with numbers
     for (let i = 0; i < points.length; i++) {
       const p = points[i];
       ctx.beginPath();
@@ -196,17 +142,22 @@ export default function PolygonSelect({
     }
   }, [points, canvasSize, scale, phase, reference, getSegmentLength]);
 
-  useEffect(() => { redraw(); }, [redraw]);
+  useEffect(() => {
+    redraw();
+  }, [redraw]);
 
   const handleCanvasClick = useCallback(
     (e: React.MouseEvent<HTMLCanvasElement>) => {
       if (phase !== "drawing") return;
       const canvas = canvasRef.current!;
       const rect = canvas.getBoundingClientRect();
-      setPoints((prev) => [...prev, {
-        x: (e.clientX - rect.left) / scale,
-        y: (e.clientY - rect.top) / scale,
-      }]);
+      setPoints((prev) => [
+        ...prev,
+        {
+          x: (e.clientX - rect.left) / scale,
+          y: (e.clientY - rect.top) / scale,
+        },
+      ]);
     },
     [phase, scale],
   );
@@ -229,7 +180,6 @@ export default function PolygonSelect({
 
   return (
     <div className="space-y-3">
-      {/* Instruction */}
       <div className="flex items-start gap-2 text-sm">
         <Hexagon className="w-4 h-4 text-amber-500 mt-0.5 shrink-0" />
         {phase === "drawing" ? (
@@ -246,7 +196,6 @@ export default function PolygonSelect({
         )}
       </div>
 
-      {/* Canvas */}
       <div className="relative rounded-xl overflow-hidden border-2 border-slate-200 bg-slate-900">
         <canvas
           ref={canvasRef}
@@ -257,7 +206,6 @@ export default function PolygonSelect({
         />
       </div>
 
-      {/* Controls */}
       <div className="flex flex-wrap gap-2">
         {phase === "drawing" && points.length >= 3 && (
           <button

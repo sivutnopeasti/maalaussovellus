@@ -1,26 +1,23 @@
 /**
  * Facade measurement library
  *
- * Polygon-based area calculation with automatic perspective correction.
+ * Polygon-based area calculation with vertical keystone correction.
  *
- * Two perspective effects are corrected:
+ * The customer is instructed to take the photo perpendicular to the wall
+ * (from the centre of the facade), so horizontal side-angle perspective is
+ * effectively zero and only the vertical keystone matters.
  *
- * 1. HORIZONTAL (side-angle view) — from reference line tilt + MLSD roll
- *    separation. Area multiplier = 1 / cos(perspective_angle).
+ * Vertical keystone (camera tilted up to fit the ridge) is corrected from:
+ *   - the vertical vanishing point detected in MLSD lines, OR
+ *   - the gyroscope tilt recorded by the in-app camera (when available).
  *
- * 2. VERTICAL (camera tilt up/down — keystone) — from vertical vanishing
- *    point detected in MLSD lines, OR from gyroscope tilt recorded by the
- *    in-app camera. Applied as a PER-PIXEL scale correction during the
- *    polygon rasterisation step.
- *
- * The vanishing-point approach uses the fact that on a vertical wall the
- * camera-space depth Z(v) at image row v relates to the vanishing-point
- * row v_v by:
+ * On a vertical wall the camera-space depth Z(v) at image row v relates
+ * to the vanishing-point row v_v by:
  *
  *   Z(v) / Z(v_ref) = (v_v − v_ref) / (v_v − v)
  *
- * The per-pixel world area is then proportional to Z(v)³, so each pixel
- * is weighted by ((v_v − v_ref) / (v_v − v))³ before summing.
+ * The per-pixel world area is proportional to Z(v)³, so each pixel inside
+ * the polygon is weighted by ((v_v − v_ref) / (v_v − v))³ before summing.
  */
 
 import type { MaskResult, ReferenceData, Point } from "./types";
@@ -36,21 +33,14 @@ export interface PreciseMeasurementResult {
   pixelsPerMeter: number;
   wallAreaM2: number;
   /** Per-pixel keystone correction kerroin keskimäärin (1.0 = ei korjausta). */
-  depthCorrectionFactor: number;
-  /** Vaakaperspektiivin korjauskerroin: 1/cos(θ) referenssikulmasta. */
-  perspectiveCorrectionFactor: number;
+  keystoneCorrectionFactor: number;
   /** Pakopisteestä johdettu pystysuora kallistus β (°). null jos ei tunnistettu / ei käytetty. */
   verticalTiltDeg: number | null;
   /** Pakopistedetektion luotettavuus 0–1, null jos ei tunnistettu. */
   verticalTiltConfidence: number | null;
   /** Lähde, josta vertikaalinen kallistus saatiin. */
   verticalTiltSource: "vanishing-point" | "sensor" | "none";
-  dominantLineAngleDeg: number | null;
-  method:
-    | "basic"
-    | "perspective"
-    | "keystone"
-    | "perspective+keystone";
+  method: "basic" | "keystone";
 }
 
 const ASSUMED_FOCAL_RATIO = 0.85;
@@ -64,7 +54,6 @@ export async function calculatePolygonMeasurement(
   options?: {
     mlsdMapUrl?: string | null;
     useKeystoneCorrection?: boolean;
-    usePerspectiveCorrection?: boolean;
     /** Optional camera tilt β (°) measured by gyroscope at capture time.
      *  Overrides vanishing-point detection when provided. */
     sensorTiltBetaDeg?: number | null;
@@ -72,21 +61,10 @@ export async function calculatePolygonMeasurement(
 ): Promise<PreciseMeasurementResult> {
   const ppm = reference.pixelsPerMeter;
   const useKeystone = options?.useKeystoneCorrection ?? true;
-  const usePerspective = options?.usePerspectiveCorrection ?? true;
   const mlsdMapUrl = options?.mlsdMapUrl ?? null;
   const sensorBeta = options?.sensorTiltBetaDeg ?? null;
 
-  // ── 1. Horizontal perspective from reference angle ─────────────────────────
-  const refAngleDeg = reference.angleDeg ?? 0;
-  let perspectiveCorrectionFactor = 1;
-  if (usePerspective && Math.abs(refAngleDeg) > 1) {
-    const cosTheta = Math.cos((Math.abs(refAngleDeg) * Math.PI) / 180);
-    if (cosTheta > 0.1) {
-      perspectiveCorrectionFactor = Math.max(0.5, Math.min(2.5, 1 / cosTheta));
-    }
-  }
-
-  // ── 2. Vertical keystone: vanishing point + sensor tilt ────────────────────
+  // ── 1. Vertical keystone: vanishing point + sensor tilt ────────────────────
   let vp: VanishingPointResult | null = null;
   let verticalTiltSource: PreciseMeasurementResult["verticalTiltSource"] = "none";
   let tiltBetaDeg: number | null = null;
@@ -187,11 +165,10 @@ export async function calculatePolygonMeasurement(
     weightedPixelArea = rawPixelArea;
   }
 
-  const depthCorrectionFactor =
+  const keystoneCorrectionFactor =
     rawPixelArea > 0 ? weightedPixelArea / rawPixelArea : 1;
 
-  const grossAreaM2 =
-    (weightedPixelArea / (ppm * ppm)) * perspectiveCorrectionFactor;
+  const grossAreaM2 = weightedPixelArea / (ppm * ppm);
 
   // ── 4. Opening masks (windows + doors), with same keystone weighting ──────
   const minOpeningPixels = imageWidth * imageHeight * 0.004;
@@ -242,19 +219,11 @@ export async function calculatePolygonMeasurement(
     openingPixelsScaled /= cosBeta;
   }
 
-  const openingAreaM2 =
-    (openingPixelsScaled / (ppm * ppm)) * perspectiveCorrectionFactor;
+  const openingAreaM2 = openingPixelsScaled / (ppm * ppm);
   const netAreaM2 = Math.max(grossAreaM2 - openingAreaM2, 0);
 
   const hasKeystone =
     vyOffset !== null && Math.abs(vyOffset) > imageHeight * 0.15;
-  const hasPerspective = Math.abs(refAngleDeg) > 1;
-
-  let method: PreciseMeasurementResult["method"];
-  if (hasKeystone && hasPerspective) method = "perspective+keystone";
-  else if (hasKeystone) method = "keystone";
-  else if (hasPerspective) method = "perspective";
-  else method = "basic";
 
   return {
     wallPixels: rawPixelArea,
@@ -262,13 +231,11 @@ export async function calculatePolygonMeasurement(
     netWallPixels: Math.max(rawPixelArea - openingPixelsScaled, 0),
     pixelsPerMeter: ppm,
     wallAreaM2: netAreaM2,
-    depthCorrectionFactor,
-    perspectiveCorrectionFactor,
+    keystoneCorrectionFactor,
     verticalTiltDeg: tiltBetaDeg,
     verticalTiltConfidence: vp?.confidence ?? (verticalTiltSource === "sensor" ? 1 : null),
     verticalTiltSource,
-    dominantLineAngleDeg: hasPerspective ? refAngleDeg : null,
-    method,
+    method: hasKeystone ? "keystone" : "basic",
   };
 }
 

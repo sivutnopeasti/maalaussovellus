@@ -112,10 +112,9 @@ export default function ReferenceMeasure({ imageDataUrl, onReferenceSet }: Props
     const dy = points[1].y - points[0].y;
     const pixelDist = Math.sqrt(dx * dx + dy * dy);
     const pixelsPerMeter = pixelDist / m;
-    // The angle from horizontal tells us how much the facade is viewed from an angle.
-    // A perfectly horizontal reference line means head-on view (no foreshortening).
-    // A tilted line (e.g. drawn along a board on an angled facade) gives the
-    // perspective correction factor automatically — no separate vanishing-point step needed.
+    // angleDeg kept in the data structure for diagnostic display only — the
+    // measurement assumes the photo is taken perpendicular to the wall, so
+    // no horizontal perspective correction is applied.
     const angleDeg = Math.atan2(dy, dx) * (180 / Math.PI);
     onReferenceSet({
       point1: points[0],
@@ -140,42 +139,27 @@ export default function ReferenceMeasure({ imageDataUrl, onReferenceSet }: Props
           <Ruler className="w-4 h-4 text-blue-600 mt-0.5 shrink-0" />
           {phase === "idle" && (
             <span>
-              Klikkaa &quot;Aloita mittaus&quot; ja piirrä viiva pitkin talon
-              alinta lautaa tai muuta <strong>vaakasuoraa</strong> rakennetta.
-              Viiva antaa samalla sekä mittakaavan että perspektiivikorjauksen.
+              Piirrä viiva pitkin jotain <strong>tunnetun mittaista vaakasuoraa</strong>{" "}
+              rakennetta — esim. ulko-oven leveys (n. 0,9 m), alin lauta, tai sokkelin leveys.
+              Viiva antaa mittakaavan koko kuvalle.
             </span>
           )}
           {phase === "point1" && (
             <span className="font-medium text-blue-600">
-              Klikkaa viivan <strong>alkupiste</strong> — esim. alimman laudan vasen pää.
+              Klikkaa viivan <strong>alkupiste</strong>.
             </span>
           )}
           {phase === "point2" && (
             <span className="font-medium text-blue-600">
-              Klikkaa viivan <strong>loppupiste</strong> — saman laudan oikea pää.
-              Piirrä viiva tarkasti lauta pitkin, jotta perspektiivi korjautuu oikein.
+              Klikkaa viivan <strong>loppupiste</strong>.
             </span>
           )}
           {phase === "input" && (
             <span className="font-medium text-green-600">
-              Syötä laudan todellinen pituus metreissä.
+              Syötä viivan todellinen pituus metreissä.
             </span>
           )}
         </div>
-        {phase === "input" && points.length === 2 && (() => {
-          const dx = points[1].x - points[0].x;
-          const dy = points[1].y - points[0].y;
-          const angleDeg = Math.atan2(dy, dx) * (180 / Math.PI);
-          const absAngle = Math.abs(angleDeg);
-          if (absAngle < 1) return (
-            <p className="text-xs text-slate-400 pl-6">Viiva on lähes vaakasuora — julkisivu kuvattu suoraan edestä.</p>
-          );
-          return (
-            <p className="text-xs text-slate-400 pl-6">
-              Viivan kulma: {angleDeg.toFixed(1)}° — perspektiivikorjaus lasketaan automaattisesti.
-            </p>
-          );
-        })()}
       </div>
 
       <div className="relative rounded-xl overflow-hidden border-2 border-slate-200 bg-slate-900">
