@@ -9,46 +9,74 @@ import type { MaskResult } from "@/lib/types";
 
 export const maxDuration = 120;
 
-const HF_MODEL = "nickmuchi/segformer-b4-finetuned-segments-facade";
-const WALL_CLASSES = ["facade"];
+// Primary: fine-tuned for real-world conditions (shadows, vegetation, variable lighting)
+// Fallback: classic CMP Facade Database model, 3.7M downloads, well-tested
+const HF_MODELS = [
+  "Xpitfire/segformer-finetuned-segments-cmp-facade",
+  "Marco333/segformer-b0-facade-cmp",
+];
+const WALL_CLASSES = ["facade", "wall"];
 const OPENING_CLASSES = ["window", "door"];
+
+type HfSegment = { label: string; score: number; mask: string };
 
 /**
  * Call HuggingFace Inference API for facade segmentation.
- * Returns labeled binary masks (white = that class).
- * Falls back to null if unavailable / rate-limited.
+ * Tries models in order — Xpitfire first (shadow/tree optimized),
+ * Marco333 as fallback (well-tested CMP standard).
+ * Returns null if all models fail or are rate-limited.
  */
 async function runHuggingFaceFacade(imageUrl: string): Promise<{
   wallMaskUrl: string | null;
   openingMasks: MaskResult[];
+  modelUsed: string;
 } | null> {
   try {
     const hfToken = process.env.HF_TOKEN;
-    const headers: Record<string, string> = {
+    const baseHeaders: Record<string, string> = {
       "Content-Type": "application/octet-stream",
       "X-Wait-For-Model": "true",
     };
-    if (hfToken) headers["Authorization"] = `Bearer ${hfToken}`;
+    if (hfToken) baseHeaders["Authorization"] = `Bearer ${hfToken}`;
 
     // Fetch image bytes from fal.ai storage
     const imgRes = await fetch(imageUrl);
     if (!imgRes.ok) return null;
     const imgBuffer = await imgRes.arrayBuffer();
 
-    const hfRes = await fetch(
-      `https://api-inference.huggingface.co/models/${HF_MODEL}`,
-      { method: "POST", headers, body: imgBuffer, signal: AbortSignal.timeout(45_000) },
-    );
-    if (!hfRes.ok) {
-      console.warn(`[HuggingFace] ${hfRes.status}: ${await hfRes.text()}`);
-      return null;
+    // Try each model in sequence until one succeeds
+    let segments: HfSegment[] | null = null;
+    let modelUsed = "";
+
+    for (const model of HF_MODELS) {
+      try {
+        const hfRes = await fetch(
+          `https://api-inference.huggingface.co/models/${model}`,
+          {
+            method: "POST",
+            headers: { ...baseHeaders },
+            body: imgBuffer,
+            signal: AbortSignal.timeout(40_000),
+          },
+        );
+        if (!hfRes.ok) {
+          console.warn(`[HF] ${model} → ${hfRes.status}`);
+          continue;
+        }
+        const parsed: unknown = await hfRes.json();
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          segments = parsed as HfSegment[];
+          modelUsed = model.split("/")[1]; // short name for logging
+          break;
+        }
+      } catch (e) {
+        console.warn(`[HF] ${model} error:`, e);
+      }
     }
 
-    const segments: Array<{ label: string; score: number; mask: string }> =
-      await hfRes.json();
-    if (!Array.isArray(segments) || segments.length === 0) return null;
+    if (!segments) return null;
 
-    // Upload masks to fal.ai storage so client can load them as URLs
+    // Upload wall mask to fal.ai storage
     let wallMaskUrl: string | null = null;
     const wallSeg = segments.find((s) => WALL_CLASSES.includes(s.label));
     if (wallSeg?.mask) {
@@ -57,6 +85,7 @@ async function runHuggingFaceFacade(imageUrl: string): Promise<{
       wallMaskUrl = await uploadToFalStorage(file);
     }
 
+    // Upload opening masks (window + door)
     const openingMasks: MaskResult[] = [];
     const openingSegs = segments.filter((s) => OPENING_CLASSES.includes(s.label));
     for (let i = 0; i < openingSegs.length; i++) {
@@ -64,21 +93,13 @@ async function runHuggingFaceFacade(imageUrl: string): Promise<{
       const buf = Buffer.from(openingSegs[i].mask, "base64");
       const file = new File([buf], `opening-${i}.png`, { type: "image/png" });
       const url = await uploadToFalStorage(file);
-      openingMasks.push({
-        index: i,
-        url,
-        width: 0,
-        height: 0,
-        category: "opening",
-      });
+      openingMasks.push({ index: i, url, width: 0, height: 0, category: "opening" });
     }
 
-    console.log(
-      `[HuggingFace] ✓ wall=${!!wallMaskUrl} openings=${openingMasks.length}`,
-    );
-    return { wallMaskUrl, openingMasks };
+    console.log(`[HF] ✓ model=${modelUsed} wall=${!!wallMaskUrl} openings=${openingMasks.length}`);
+    return { wallMaskUrl, openingMasks, modelUsed };
   } catch (err) {
-    console.warn("[HuggingFace] facade segmentation failed:", err);
+    console.warn("[HF] facade segmentation failed:", err);
     return null;
   }
 }
@@ -89,22 +110,19 @@ export async function POST(req: NextRequest) {
 
     const { imageUrl } = await req.json();
     if (!imageUrl) {
-      return NextResponse.json(
-        { error: "imageUrl is required" },
-        { status: 400 },
-      );
+      return NextResponse.json({ error: "imageUrl is required" }, { status: 400 });
     }
 
-    // Run all three in parallel for best speed:
-    // 1. HuggingFace facade model (best accuracy for real facades)
-    // 2. SAM 3 wall prompt (fallback wall mask for corner detection)
-    // 3. SAM 3 opening prompt (fallback opening detection)
+    // Run in parallel:
+    // 1. HuggingFace (Xpitfire → Marco333) — best accuracy for real building facades
+    // 2. SAM 3 wall prompt — fallback wall mask for corner detection
+    // 3. SAM 3 opening prompt — fallback opening detection
     const empty: Sam3Output = { masks: [], boxes: [], metadata: [] };
     const [hfResult, sam3WallResult, sam3OpeningResult] = await Promise.all([
       runHuggingFaceFacade(imageUrl),
       runSam3Prompted(
         imageUrl,
-        "wooden wall cladding, wood siding, painted wood planks, horizontal boards, house wall surface, exterior house wall, painted surface",
+        "wooden wall cladding, wood siding, painted wood planks, horizontal boards, exterior house wall, painted surface",
         8,
       ).catch(() => empty),
       runSam3Prompted(
@@ -114,16 +132,15 @@ export async function POST(req: NextRequest) {
       ).catch(() => empty),
     ]);
 
-    // Prefer HuggingFace results; fall back to SAM 3
+    // Prefer HuggingFace wall mask; fall back to SAM 3
     const wallMaskUrl =
       hfResult?.wallMaskUrl ?? sam3WallResult.masks?.[0]?.url ?? null;
 
+    // Prefer HuggingFace opening masks; fall back to SAM 3
     let masks: MaskResult[];
     if (hfResult && hfResult.openingMasks.length > 0) {
-      // HuggingFace found openings — use them (more reliable)
       masks = hfResult.openingMasks;
     } else {
-      // Fall back to SAM 3 opening masks
       masks = sam3OpeningResult.masks
         .filter((img) => img.url)
         .map((img, idx) => ({
@@ -135,7 +152,10 @@ export async function POST(req: NextRequest) {
         }));
     }
 
-    const source = hfResult ? "huggingface+sam3-fallback" : "sam3";
+    const source = hfResult
+      ? `huggingface:${hfResult.modelUsed}`
+      : "sam3-fallback";
+
     return NextResponse.json({ masks, wallMaskUrl, source });
   } catch (err) {
     console.error("[/api/segment]", err);
