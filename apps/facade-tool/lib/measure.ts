@@ -154,7 +154,11 @@ export async function calculatePolygonMeasurement(
   const grossAreaM2 =
     (grossWeightedPixels / (ppm * ppm)) * perspectiveCorrectionFactor;
 
-  // ── 4. Opening areas (SAM 3 masks) — also depth-weighted ─────────────────
+  // ── 4. Opening areas (SAM 3 / HuggingFace masks) — also depth-weighted ──────
+  // Minimum opening area: 0.4% of total image pixels.
+  // This filters out thin decorative elements (fences, lattices, pipes) that
+  // segmentation models sometimes misclassify as windows/doors.
+  const minOpeningPixels = imageWidth * imageHeight * 0.004;
   const openingMasks = masks.filter((m) => m.category === "opening");
   let openingPixelsScaled = 0;
   for (const mask of openingMasks) {
@@ -167,7 +171,10 @@ export async function calculatePolygonMeasurement(
         if (hasTransparent ? data[i + 3] > 127 : data[i] > 127) rawCount++;
       }
       const scaleFactor = (imageWidth * imageHeight) / (mc.width * mc.height);
-      openingPixelsScaled += rawCount * scaleFactor;
+      const scaledCount = rawCount * scaleFactor;
+      // Skip tiny regions — likely noise, fences or lattice misclassified as openings
+      if (scaledCount < minOpeningPixels) continue;
+      openingPixelsScaled += scaledCount;
     } catch {
       // skip
     }

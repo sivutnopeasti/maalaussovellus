@@ -60,6 +60,15 @@ export default function SegmentationOverlay({
           for (let si = 3; si < Math.min(d.length, 400); si += 4) {
             if (d[si] < 10) { hasTransparentPixels = true; break; }
           }
+
+          // Count pixels; skip tiny masks (< 0.4% of image = likely noise/fence)
+          let pixCount = 0;
+          for (let i = 0; i < d.length; i += 4) {
+            if (hasTransparentPixels ? d[i + 3] > 127 : d[i] > 127) pixCount++;
+          }
+          const minPix = (origImg.width * origImg.height) * 0.004;
+          if (mask.category === "opening" && pixCount < minPix) continue;
+
           for (let i = 0; i < d.length; i += 4) {
             const inMask = hasTransparentPixels ? d[i + 3] > 127 : d[i] > 127;
             if (inMask) {

@@ -44,6 +44,11 @@ export async function detectFacadeCorners(
     const leftProfile: Point[] = [];
     const rightProfile: Point[] = [];
 
+    // Minimum mask width per row: skip very thin rows (fences, poles, noise).
+    // Threshold = 4% of image width — removes narrow structures while keeping
+    // gabled walls (which narrow gradually, not abruptly).
+    const minRowWidth = imageWidth * 0.04;
+
     for (let y = 0; y < H; y++) {
       let leftX = -1;
       let rightX = -1;
@@ -53,7 +58,7 @@ export async function detectFacadeCorners(
           rightX = x;
         }
       }
-      if (leftX !== -1) {
+      if (leftX !== -1 && (rightX - leftX) >= minRowWidth) {
         leftProfile.push({ x: leftX, y });
         rightProfile.push({ x: rightX, y });
       }
@@ -61,13 +66,20 @@ export async function detectFacadeCorners(
 
     if (leftProfile.length < 4) return null;
 
-    // ── Douglas-Peucker simplification ───────────────────────────────────────
-    // Epsilon = 1.2% of image diagonal → typically 4–8 points for a house
+    // ── Douglas-Peucker with adaptive epsilon ─────────────────────────────────
+    // Start at 3.5% of diagonal. If still too many points, double epsilon until
+    // ≤ 8 points or epsilon > 15% (give up and return simplified version).
     const diagonal = Math.sqrt(imageWidth ** 2 + imageHeight ** 2);
-    const epsilon = diagonal * 0.012;
+    let epsilon = diagonal * 0.035;
+    let simplLeft: Point[];
+    let simplRight: Point[];
 
-    const simplLeft  = douglasPeucker(leftProfile,  epsilon);
-    const simplRight = douglasPeucker(rightProfile, epsilon);
+    do {
+      simplLeft  = douglasPeucker(leftProfile,  epsilon);
+      simplRight = douglasPeucker(rightProfile, epsilon);
+      if (simplLeft.length + simplRight.length <= 10) break;
+      epsilon *= 1.8;
+    } while (epsilon < diagonal * 0.15);
 
     // ── Build polygon: left (top→bottom) + right (bottom→top) ────────────────
     const polygon: Point[] = [
