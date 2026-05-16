@@ -7,6 +7,10 @@ import type { CaptureTilt } from "@/lib/types";
 interface Props {
   onCapture: (file: File, dataUrl: string, tilt: CaptureTilt | null) => void;
   onClose: () => void;
+  /** Otsikko ylävalikossa — esim. "Pääty (1/2)" */
+  title?: string;
+  /** Vihjeteksti alalaidassa */
+  hint?: string;
 }
 
 type DeviceOrientationEventWithPermission = typeof DeviceOrientationEvent & {
@@ -14,44 +18,52 @@ type DeviceOrientationEventWithPermission = typeof DeviceOrientationEvent & {
 };
 
 /**
- * In-app camera with live bubble level.
+ * In-app camera with a horizontal level line.
  *
- * Uses `getUserMedia` for the video stream and `DeviceOrientationEvent` for
- * phone tilt. Color-codes the level indicator and tilt readout to guide the
- * customer toward holding the phone vertically (β ≈ 90°) with the horizon
- * level (γ ≈ 0°).
+ * The line is drawn across the center of the viewfinder and tilts in real
+ * time with the phone's roll (γ). When the line is within ±2° of horizontal
+ * it turns green — that is the sole "OK to shoot" signal shown to the user.
  *
- * On iOS 13+ DeviceOrientation requires explicit permission via a user
- * gesture — we request it the first time the customer taps "Aktivoi
- * vesivaaka".
+ * The level activates automatically:
+ *  - On Android / desktop, `deviceorientation` events fire without
+ *    permission, so we attach the listener on mount.
+ *  - On iOS 13+ the API requires a user gesture; we show a single one-tap
+ *    prompt the first time the camera opens, after which orientation is
+ *    available for the rest of the session.
  */
-export default function CameraCapture({ onCapture, onClose }: Props) {
+export default function CameraCapture({
+  onCapture,
+  onClose,
+  title = "Ota kuva julkisivusta",
+  hint,
+}: Props) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [starting, setStarting] = useState(true);
 
-  // Phone orientation
-  const [beta, setBeta] = useState<number | null>(null);  // pitch
-  const [gamma, setGamma] = useState<number | null>(null); // roll
-  const [orientationPermission, setOrientationPermission] =
-    useState<"unknown" | "granted" | "denied" | "unsupported">("unknown");
+  // Sivuttainen kallistus (roll / γ). Vain tämä näytetään käyttäjälle.
+  const [gamma, setGamma] = useState<number | null>(null);
+  // Pitch (β) tallennetaan silti pystyperspektiivin korjausta varten,
+  // mutta sitä ei näytetä.
+  const [beta, setBeta] = useState<number | null>(null);
 
-  // Start camera on mount.
-  // Important: getUserMedia is requested only ONCE here. The stream is stored
-  // in a ref; attaching it to <video> is handled by a separate effect below
-  // because the <video> element is mounted conditionally (after `starting` is
-  // set to false).
+  const [orientationPermission, setOrientationPermission] = useState<
+    "unknown" | "granted" | "denied" | "unsupported"
+  >("unknown");
+
+  // ── Start camera ──────────────────────────────────────────────────────────
   useEffect(() => {
     let cancelled = false;
     const start = async () => {
       try {
         if (!navigator.mediaDevices?.getUserMedia) {
-          setError("Selaimesi ei tue kameraa. Käytä uutta selainta (Safari/Chrome).");
+          setError(
+            "Selaimesi ei tue kameraa. Käytä uutta selainta (Safari/Chrome).",
+          );
           setStarting(false);
           return;
         }
-        // First try the rear camera with HD resolution
         let s: MediaStream;
         try {
           s = await navigator.mediaDevices.getUserMedia({
@@ -63,7 +75,6 @@ export default function CameraCapture({ onCapture, onClose }: Props) {
             audio: false,
           });
         } catch {
-          // Fallback: any camera, any resolution (laptop without rear cam, etc.)
           s = await navigator.mediaDevices.getUserMedia({
             video: true,
             audio: false,
@@ -96,81 +107,68 @@ export default function CameraCapture({ onCapture, onClose }: Props) {
     };
   }, []);
 
-  // Attach stream to <video> once both the element and the stream exist.
-  // This runs after starting flips to false (= <video> mounts).
+  // ── Attach stream to <video> once the element mounts ─────────────────────
   useEffect(() => {
     if (!starting && streamRef.current && videoRef.current) {
       videoRef.current.srcObject = streamRef.current;
-      // Force play — some browsers require it explicitly after assigning srcObject
-      videoRef.current.play().catch((err) => {
-        console.warn("video.play() failed:", err);
+      videoRef.current.play().catch(() => {
+        /* silent */
       });
     }
   }, [starting]);
 
-  // Listen for device orientation
-  const startOrientation = useCallback(async () => {
-    try {
-      const DOE = window.DeviceOrientationEvent as DeviceOrientationEventWithPermission;
-      if (typeof DOE === "undefined") {
-        setOrientationPermission("unsupported");
-        return;
-      }
-      if (typeof DOE.requestPermission === "function") {
-        const res = await DOE.requestPermission();
-        if (res !== "granted") {
-          setOrientationPermission("denied");
-          return;
-        }
-      }
-      const handler = (e: DeviceOrientationEvent) => {
-        setBeta(e.beta);
-        setGamma(e.gamma);
-      };
-      window.addEventListener("deviceorientation", handler);
-      setOrientationPermission("granted");
-      return () => window.removeEventListener("deviceorientation", handler);
-    } catch {
-      setOrientationPermission("denied");
-    }
+  // ── Orientation listener ──────────────────────────────────────────────────
+  // Activates automatically on Android / desktop. On iOS we expose a button
+  // (rendered below) because requestPermission needs a user gesture.
+  const attachOrientation = useCallback(() => {
+    const handler = (e: DeviceOrientationEvent) => {
+      setGamma(e.gamma);
+      setBeta(e.beta);
+    };
+    window.addEventListener("deviceorientation", handler);
+    setOrientationPermission("granted");
+    return () => window.removeEventListener("deviceorientation", handler);
   }, []);
 
-  // Auto-start listening on platforms that don't need permission (most Androids)
   useEffect(() => {
-    const DOE = window.DeviceOrientationEvent as DeviceOrientationEventWithPermission;
+    const DOE = window.DeviceOrientationEvent as
+      | DeviceOrientationEventWithPermission
+      | undefined;
     if (typeof DOE === "undefined") {
       setOrientationPermission("unsupported");
       return;
     }
+    // Devices that do NOT require permission (Android, desktop) → attach now.
     if (typeof DOE.requestPermission !== "function") {
-      const handler = (e: DeviceOrientationEvent) => {
-        setBeta(e.beta);
-        setGamma(e.gamma);
-      };
-      window.addEventListener("deviceorientation", handler);
-      setOrientationPermission("granted");
-      return () => window.removeEventListener("deviceorientation", handler);
+      return attachOrientation();
     }
-  }, []);
+    // iOS — waits for user gesture (the "Aktivoi vesivaaka" button below).
+  }, [attachOrientation]);
 
-  // Compute camera tilt: phone vertical = β ≈ 90°.
-  // cameraTiltDeg = 90 − β. Positive = camera tilted UP (toward sky).
-  const cameraTilt = beta !== null ? 90 - beta : null;
-  const roll = gamma;
+  const requestIOSOrientation = useCallback(async () => {
+    try {
+      const DOE = window.DeviceOrientationEvent as DeviceOrientationEventWithPermission;
+      if (typeof DOE?.requestPermission === "function") {
+        const res = await DOE.requestPermission();
+        if (res === "granted") {
+          attachOrientation();
+        } else {
+          setOrientationPermission("denied");
+        }
+      }
+    } catch {
+      setOrientationPermission("denied");
+    }
+  }, [attachOrientation]);
 
-  // Tolerances
-  const TILT_OK = 2;     // ± degrees considered "level"
-  const TILT_WARN = 5;   // larger than this = red
-  const isLevel =
-    cameraTilt !== null &&
-    roll !== null &&
-    Math.abs(cameraTilt) <= TILT_OK &&
-    Math.abs(roll) <= TILT_OK;
-  const isBad =
-    cameraTilt !== null &&
-    roll !== null &&
-    (Math.abs(cameraTilt) > TILT_WARN || Math.abs(roll) > TILT_WARN);
+  // ── Level state ───────────────────────────────────────────────────────────
+  const TILT_OK = 2; // ± degrees considered level
+  const TILT_WARN = 5;
+  const roll = gamma; // sivuttainen kallistus
+  const isLevel = roll !== null && Math.abs(roll) <= TILT_OK;
+  const isBad = roll !== null && Math.abs(roll) > TILT_WARN;
 
+  // ── Capture ───────────────────────────────────────────────────────────────
   const handleCapture = useCallback(async () => {
     const video = videoRef.current;
     if (!video || !streamRef.current) return;
@@ -188,15 +186,15 @@ export default function CameraCapture({ onCapture, onClose }: Props) {
     });
     const dataUrl = canvas.toDataURL("image/jpeg", 0.92);
     const tilt: CaptureTilt | null =
-      cameraTilt !== null && roll !== null
+      beta !== null
         ? {
-            beta: beta ?? 0,
+            beta,
             gamma: gamma ?? 0,
-            cameraTiltDeg: cameraTilt,
+            cameraTiltDeg: 90 - beta,
           }
         : null;
     onCapture(file, dataUrl, tilt);
-  }, [beta, gamma, cameraTilt, roll, onCapture]);
+  }, [beta, gamma, onCapture]);
 
   return (
     <div className="fixed inset-0 z-50 bg-black flex flex-col">
@@ -209,7 +207,7 @@ export default function CameraCapture({ onCapture, onClose }: Props) {
         >
           <X className="w-6 h-6" />
         </button>
-        <span className="text-sm font-medium">Ota kuva julkisivusta</span>
+        <span className="text-sm font-medium">{title}</span>
         <div className="w-10" />
       </div>
 
@@ -240,62 +238,26 @@ export default function CameraCapture({ onCapture, onClose }: Props) {
               className="absolute inset-0 w-full h-full object-cover"
             />
 
-            {/* Level overlay */}
-            <LevelOverlay
-              cameraTilt={cameraTilt}
-              roll={roll}
-              isLevel={isLevel}
-              isBad={isBad}
-              orientationPermission={orientationPermission}
-              onRequestPermission={startOrientation}
-            />
+            {/* iOS-only: one-tap permission for the level */}
+            {orientationPermission === "unknown" && (
+              <div className="absolute top-4 left-1/2 -translate-x-1/2 z-10">
+                <button
+                  onClick={requestIOSOrientation}
+                  className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-xs rounded-lg shadow"
+                >
+                  Aktivoi vesivaaka
+                </button>
+              </div>
+            )}
 
-            {/* Hairline crosshair */}
-            <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
-              <div className="w-px h-16 bg-white/40" />
-            </div>
-            <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
-              <div className="h-px w-16 bg-white/40" />
-            </div>
+            {/* Horizontal level line — the only visible level indicator */}
+            <LevelLine roll={roll} isLevel={isLevel} isBad={isBad} />
           </>
         )}
       </div>
 
       {/* Bottom controls */}
       <div className="px-6 py-6 bg-black/80 flex flex-col items-center gap-3">
-        {/* Tilt summary */}
-        {orientationPermission === "granted" && cameraTilt !== null && roll !== null && (
-          <div
-            className={`text-xs font-medium px-3 py-1 rounded-full ${
-              isLevel
-                ? "bg-green-500/20 text-green-200"
-                : isBad
-                  ? "bg-red-500/20 text-red-200"
-                  : "bg-yellow-500/20 text-yellow-200"
-            }`}
-          >
-            kallistus {cameraTilt.toFixed(0)}° · sivukallistus {roll.toFixed(0)}°
-            {isLevel
-              ? " — suora!"
-              : isBad
-                ? " — paljon vinossa"
-                : " — säädä vielä"}
-          </div>
-        )}
-        {orientationPermission === "unsupported" && (
-          <div className="text-xs text-white/60">
-            Tällä laitteella ei ole kallistusanturia — kuvaa silti
-          </div>
-        )}
-        {orientationPermission === "denied" && (
-          <button
-            onClick={startOrientation}
-            className="text-xs text-yellow-300 underline"
-          >
-            Aktivoi vesivaaka
-          </button>
-        )}
-
         {/* Capture button */}
         <button
           onClick={handleCapture}
@@ -304,7 +266,7 @@ export default function CameraCapture({ onCapture, onClose }: Props) {
           title="Ota kuva"
         >
           <div
-            className={`w-16 h-16 rounded-full border-4 ${
+            className={`w-16 h-16 rounded-full border-4 transition-colors ${
               isLevel
                 ? "border-green-500"
                 : isBad
@@ -315,79 +277,61 @@ export default function CameraCapture({ onCapture, onClose }: Props) {
           <Camera className="absolute w-7 h-7 text-slate-700" />
         </button>
 
-        <p className="text-xs text-white/60 text-center max-w-xs">
-          {isLevel
-            ? "Pidä paikoillaan ja ota kuva — mittauksen tarkkuus on optimaalinen."
-            : "Pidä puhelin suorassa (kallistus → 0°). Astu kauemmas jos koko talo ei mahdu kuvaan."}
+        <p className="text-xs text-white/70 text-center max-w-xs">
+          {hint ??
+            (isLevel
+              ? "Vesivaaka on tasossa — ota kuva nyt."
+              : "Käännä puhelinta kunnes viiva on vihreä ja vaakasuora.")}
         </p>
       </div>
     </div>
   );
 }
 
-// ─── Bubble level overlay ────────────────────────────────────────────────────
+// ─── Horizontal level line ───────────────────────────────────────────────────
+//
+// A single line drawn across the middle of the viewfinder, rotated by the
+// phone's roll. Colour: yellow while tilted, green when within ±2°, red
+// when severely tilted.
 
-interface LevelProps {
-  cameraTilt: number | null;
+interface LevelLineProps {
   roll: number | null;
   isLevel: boolean;
   isBad: boolean;
-  orientationPermission: "unknown" | "granted" | "denied" | "unsupported";
-  onRequestPermission: () => void;
 }
 
-function LevelOverlay({
-  cameraTilt,
-  roll,
-  isLevel,
-  isBad,
-  orientationPermission,
-  onRequestPermission,
-}: LevelProps) {
-  if (orientationPermission === "unsupported") return null;
-
-  if (orientationPermission === "denied" || orientationPermission === "unknown") {
-    return (
-      <div className="absolute top-4 left-1/2 -translate-x-1/2 z-10">
-        <button
-          onClick={onRequestPermission}
-          className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-xs rounded-lg shadow"
-        >
-          Aktivoi vesivaaka
-        </button>
-      </div>
-    );
-  }
-
-  if (cameraTilt === null || roll === null) return null;
-
-  // Map tilt to bubble offset within a 100×100 circle.
-  // Use ±15° as full deflection.
-  const MAX_DEG = 15;
-  const x = Math.max(-1, Math.min(1, roll / MAX_DEG)) * 38;
-  const y = Math.max(-1, Math.min(1, cameraTilt / MAX_DEG)) * 38;
-
-  const bubbleColor = isLevel
-    ? "rgb(34, 197, 94)"        // green
+function LevelLine({ roll, isLevel, isBad }: LevelLineProps) {
+  // While we don't have orientation data yet, fall back to a static line.
+  const angle = roll ?? 0;
+  const color = isLevel
+    ? "rgba(34, 197, 94, 0.95)" // green
     : isBad
-      ? "rgb(239, 68, 68)"      // red
-      : "rgb(234, 179, 8)";     // yellow
+      ? "rgba(239, 68, 68, 0.95)" // red
+      : "rgba(255, 255, 255, 0.85)"; // neutral white while user adjusts
+  const shadow = isLevel
+    ? "0 0 12px rgba(34, 197, 94, 0.7)"
+    : isBad
+      ? "0 0 12px rgba(239, 68, 68, 0.5)"
+      : "0 0 6px rgba(0, 0, 0, 0.4)";
 
   return (
-    <div className="absolute top-4 left-1/2 -translate-x-1/2 z-10 flex flex-col items-center gap-1">
-      <svg width={100} height={100} viewBox="-50 -50 100 100">
-        {/* Outer ring */}
-        <circle cx={0} cy={0} r={45} fill="rgba(0,0,0,0.4)" stroke="rgba(255,255,255,0.5)" strokeWidth={1} />
-        {/* Inner target zone */}
-        <circle cx={0} cy={0} r={8} fill="none" stroke="rgba(255,255,255,0.3)" strokeWidth={1} strokeDasharray="2,2" />
-        {/* Crosshairs */}
-        <line x1={-45} y1={0} x2={-12} y2={0} stroke="rgba(255,255,255,0.4)" strokeWidth={1} />
-        <line x1={12} y1={0} x2={45} y2={0} stroke="rgba(255,255,255,0.4)" strokeWidth={1} />
-        <line x1={0} y1={-45} x2={0} y2={-12} stroke="rgba(255,255,255,0.4)" strokeWidth={1} />
-        <line x1={0} y1={12} x2={0} y2={45} stroke="rgba(255,255,255,0.4)" strokeWidth={1} />
-        {/* Bubble */}
-        <circle cx={x} cy={y} r={7} fill={bubbleColor} stroke="white" strokeWidth={1.5} />
-      </svg>
+    <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
+      <div
+        className="transition-transform duration-100"
+        style={{ transform: `rotate(${angle.toFixed(2)}deg)` }}
+      >
+        <div
+          className="h-[3px] w-[280px] rounded-full"
+          style={{ backgroundColor: color, boxShadow: shadow }}
+        />
+        {/* Center dot */}
+        <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2">
+          <div
+            className="w-2 h-2 rounded-full"
+            style={{ backgroundColor: color }}
+          />
+        </div>
+      </div>
     </div>
   );
 }

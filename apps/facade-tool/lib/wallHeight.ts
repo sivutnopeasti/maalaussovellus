@@ -89,6 +89,7 @@ export function findReferenceVerticalEdge(
 // ─── localStorage persistence ────────────────────────────────────────────────
 
 const STORAGE_KEY = "facadeStoredWallHeight";
+const PROJECT_KEY = "facadeProject";
 
 export interface StoredWallHeight {
   /** Wall corner height in meters. */
@@ -136,4 +137,74 @@ export function clearStoredWallHeight(): void {
   } catch {
     // ignore
   }
+}
+
+// ─── Multi-photo project ─────────────────────────────────────────────────────
+
+export interface WallMeasurement {
+  /** Human-readable label, e.g. "Pääty 1", "Pitkä sivu 1". */
+  label: string;
+  /** Net wall area in m² for this single photo. */
+  areaM2: number;
+  /** Timestamp. */
+  measuredAt: number;
+}
+
+export interface FacadeProject {
+  measurements: WallMeasurement[];
+  startedAt: number;
+}
+
+export function getProject(): FacadeProject | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = localStorage.getItem(PROJECT_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<FacadeProject>;
+    if (Array.isArray(parsed.measurements)) {
+      return {
+        measurements: parsed.measurements as WallMeasurement[],
+        startedAt:
+          typeof parsed.startedAt === "number" ? parsed.startedAt : Date.now(),
+      };
+    }
+  } catch {
+    // ignore
+  }
+  return null;
+}
+
+export function addMeasurement(areaM2: number, label?: string): FacadeProject {
+  const existing = getProject();
+  const measurements = existing?.measurements ?? [];
+  const finalLabel =
+    label ??
+    (measurements.length === 0 ? "Seinä 1" : `Seinä ${measurements.length + 1}`);
+  const next: FacadeProject = {
+    measurements: [
+      ...measurements,
+      { label: finalLabel, areaM2, measuredAt: Date.now() },
+    ],
+    startedAt: existing?.startedAt ?? Date.now(),
+  };
+  try {
+    localStorage.setItem(PROJECT_KEY, JSON.stringify(next));
+  } catch {
+    // ignore
+  }
+  return next;
+}
+
+export function clearProject(): void {
+  if (typeof window === "undefined") return;
+  try {
+    localStorage.removeItem(PROJECT_KEY);
+  } catch {
+    // ignore
+  }
+}
+
+export function projectTotalM2(project: FacadeProject | null): number {
+  if (!project) return 0;
+  return project.measurements.reduce((sum, m) => sum + m.areaM2, 0);
 }

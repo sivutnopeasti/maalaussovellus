@@ -11,6 +11,8 @@ import {
   ChevronDown,
   ChevronUp,
   Sparkles,
+  Camera,
+  Plus,
 } from "lucide-react";
 import PolygonSelect from "@/components/PolygonSelect";
 import QuoteForm from "@/components/QuoteForm";
@@ -27,6 +29,10 @@ import {
   estimateWallHeightM,
   findReferenceVerticalEdge,
   storeWallHeight,
+  addMeasurement,
+  getProject,
+  projectTotalM2,
+  type FacadeProject,
 } from "@/lib/wallHeight";
 
 type Panel = "polygon" | "measure" | "quote";
@@ -43,6 +49,7 @@ export default function ResultPage() {
   const [lastStoredWallHeightM, setLastStoredWallHeightM] = useState<
     number | null
   >(null);
+  const [project, setProject] = useState<FacadeProject | null>(null);
   // Keystone (vertical) correction uses the vanishing point or sensor tilt — reliable for tilted photos.
   // The customer is instructed to photograph the wall head-on (from the center) so no horizontal
   // perspective correction is applied.
@@ -56,6 +63,7 @@ export default function ResultPage() {
     }
     const s: AnalysisSession = JSON.parse(raw);
     setSession(s);
+    setProject(getProject());
   }, [router]);
 
   const handleCalculate = async () => {
@@ -116,11 +124,20 @@ export default function ResultPage() {
         storeWallHeight(wallHeightM);
         setLastStoredWallHeightM(wallHeightM);
       }
+
+      // Add this measurement to the running project total
+      const updated = addMeasurement(result.wallAreaM2);
+      setProject(updated);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Laskenta epäonnistui.");
     } finally {
       setIsMeasuring(false);
     }
+  };
+
+  const handleNextWall = () => {
+    sessionStorage.removeItem("facadeSession");
+    router.push("/?camera=1");
   };
 
   const handleSaveQuote = async (data: {
@@ -168,6 +185,8 @@ export default function ResultPage() {
 
   const activePolygon = polygon ?? session?.polygon;
   const hasPolygon = !!(activePolygon && activePolygon.points.length >= 3);
+  const projectTotal = projectTotalM2(project);
+  const wallCount = project?.measurements.length ?? 0;
 
   return (
     <div className="min-h-screen flex flex-col">
@@ -181,9 +200,13 @@ export default function ResultPage() {
             <ArrowLeft className="w-5 h-5 text-slate-600" />
           </button>
           <div className="flex-1">
-            <h1 className="font-bold text-slate-900">Analyysitulokset</h1>
+            <h1 className="font-bold text-slate-900">
+              Seinä {wallCount > 0 && measurement ? wallCount : wallCount + 1}
+            </h1>
             <p className="text-xs text-slate-500">
-              Rajaa julkisivu ja laske neliömetrit
+              {wallCount > 0
+                ? `Projektissa ${wallCount} seinää · yht. ${projectTotal.toFixed(1)} m²`
+                : "Rajaa julkisivu ja laske neliömetrit"}
             </p>
           </div>
           {measurement && (
@@ -437,6 +460,50 @@ export default function ResultPage() {
                     )}
                     {isMeasuring ? "Lasketaan..." : "Laske neliömetrit"}
                   </button>
+
+                  {/* Project progress + next wall */}
+                  {measurement && project && (
+                    <div className="space-y-3 pt-2">
+                      <div className="p-3 bg-blue-50 border border-blue-200 rounded-xl space-y-1.5">
+                        <p className="text-xs font-semibold text-blue-800 uppercase tracking-wide">
+                          Tämä projekti
+                        </p>
+                        {project.measurements.map((m, idx) => (
+                          <div
+                            key={idx}
+                            className="flex items-center justify-between text-sm text-blue-700"
+                          >
+                            <span>
+                              <CheckCircle2 className="w-3.5 h-3.5 inline mr-1.5 text-green-600" />
+                              {m.label}
+                            </span>
+                            <span className="font-mono">
+                              {m.areaM2.toFixed(2)} m²
+                            </span>
+                          </div>
+                        ))}
+                        <div className="flex items-center justify-between text-base font-bold text-blue-900 border-t border-blue-200 pt-1.5">
+                          <span>Kokonaisala</span>
+                          <span className="font-mono">
+                            {projectTotal.toFixed(2)} m²
+                          </span>
+                        </div>
+                      </div>
+
+                      <button
+                        onClick={handleNextWall}
+                        className="w-full flex items-center justify-center gap-2 py-3.5 bg-gradient-to-br from-emerald-500 to-emerald-600 hover:from-emerald-600 hover:to-emerald-700 text-white rounded-xl text-base font-semibold shadow-lg shadow-emerald-200/60 transition-colors"
+                      >
+                        <Camera className="w-5 h-5" />
+                        Mittaa seuraava seinä
+                        <Plus className="w-4 h-4" />
+                      </button>
+                      <p className="text-xs text-slate-500 text-center">
+                        Sovellus käyttää automaattisesti tallennettua
+                        nurkkakorkeutta — ei tarvita uutta referenssiä.
+                      </p>
+                    </div>
+                  )}
                 </div>
               </AccordionPanel>
 
