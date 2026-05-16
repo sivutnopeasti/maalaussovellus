@@ -5,7 +5,12 @@ import { useRouter } from "next/navigation";
 import { Building2, ChevronRight, CheckCircle2, Loader2, AlertCircle } from "lucide-react";
 import ImageUpload from "@/components/ImageUpload";
 import ReferenceMeasure from "@/components/ReferenceMeasure";
-import type { ReferenceData, AnalysisSession, MaskResult } from "@/lib/types";
+import type {
+  ReferenceData,
+  AnalysisSession,
+  MaskResult,
+  CaptureTilt,
+} from "@/lib/types";
 
 type Step = "upload" | "reference" | "analysing";
 
@@ -16,12 +21,18 @@ export default function HomePage() {
   const [imageDataUrl, setImageDataUrl] = useState<string>("");
   const [imageDimensions, setImageDimensions] = useState({ w: 0, h: 0 });
   const [reference, setReference] = useState<ReferenceData | null>(null);
+  const [captureTilt, setCaptureTilt] = useState<CaptureTilt | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const handleImageSelected = (file: File, dataUrl: string) => {
+  const handleImageSelected = (
+    file: File,
+    dataUrl: string,
+    tilt?: CaptureTilt | null,
+  ) => {
     setImageFile(file);
     setImageDataUrl(dataUrl);
     setReference(null);
+    setCaptureTilt(tilt ?? null);
     const img = new Image();
     img.onload = () => setImageDimensions({ w: img.width, h: img.height });
     img.src = dataUrl;
@@ -90,6 +101,7 @@ export default function HomePage() {
         wallMaskUrl: segData.wallMaskUrl ?? null,
         depthMapUrl,
         mlsdMapUrl,
+        captureTilt: captureTilt ?? undefined,
       };
 
       sessionStorage.setItem("facadeSession", JSON.stringify(session));

@@ -35,6 +35,16 @@ export interface PolygonData {
   points: Point[];
 }
 
+/** Phone tilt at capture time, sourced from DeviceOrientationEvent. */
+export interface CaptureTilt {
+  /** Pitch (forward/back tilt). 90° = phone held vertically. */
+  beta: number;
+  /** Roll (sideways tilt). 0° = horizon level. */
+  gamma: number;
+  /** Effective camera tilt β relative to "phone vertical" — derived as (90 − beta). Positive = tilted up. */
+  cameraTiltDeg: number;
+}
+
 export interface AnalysisSession {
   /** Facade outline polygon — when present, used instead of SAM wall masks for area. */
   polygon?: PolygonData;
@@ -50,6 +60,8 @@ export interface AnalysisSession {
   depthMapUrl: string;
   /** MLSD line map — used for dominant line angle / foreshortening correction */
   mlsdMapUrl: string | null;
+  /** Phone orientation at capture time, when in-app camera was used. */
+  captureTilt?: CaptureTilt;
 }
 
 export interface MeasurementResult {

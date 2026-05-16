@@ -1,19 +1,33 @@
 /**
  * Facade measurement library
  *
- * Polygon-based area calculation with two automatic perspective corrections:
+ * Polygon-based area calculation with automatic perspective correction.
  *
- * 1. VERTICAL (camera tilt up/down) — depth-map per-pixel weighting:
- *    Each pixel inside the polygon is weighted by (refDepth / pixelDepth)².
- *    Corrects for near/far distance differences when camera tilts upward.
+ * Two perspective effects are corrected:
  *
- * 2. HORIZONTAL (side-angle view) — MLSD roll separation:
- *    Reference line angle = roll + perspective.
- *    Vertical MLSD lines detect roll only → perspective = ref_angle − roll.
- *    Corrected area = rawArea / cos²(perspectiveAngle).
+ * 1. HORIZONTAL (side-angle view) — from reference line tilt + MLSD roll
+ *    separation. Area multiplier = 1 / cos(perspective_angle).
+ *
+ * 2. VERTICAL (camera tilt up/down — keystone) — from vertical vanishing
+ *    point detected in MLSD lines, OR from gyroscope tilt recorded by the
+ *    in-app camera. Applied as a PER-PIXEL scale correction during the
+ *    polygon rasterisation step.
+ *
+ * The vanishing-point approach uses the fact that on a vertical wall the
+ * camera-space depth Z(v) at image row v relates to the vanishing-point
+ * row v_v by:
+ *
+ *   Z(v) / Z(v_ref) = (v_v − v_ref) / (v_v − v)
+ *
+ * The per-pixel world area is then proportional to Z(v)³, so each pixel
+ * is weighted by ((v_v − v_ref) / (v_v − v))³ before summing.
  */
 
 import type { MaskResult, ReferenceData, Point } from "./types";
+import {
+  findVerticalVanishingPoint,
+  type VanishingPointResult,
+} from "./vanishingPoint";
 
 export interface PreciseMeasurementResult {
   wallPixels: number;
@@ -21,70 +35,94 @@ export interface PreciseMeasurementResult {
   netWallPixels: number;
   pixelsPerMeter: number;
   wallAreaM2: number;
+  /** Per-pixel keystone correction kerroin keskimäärin (1.0 = ei korjausta). */
   depthCorrectionFactor: number;
+  /** Vaakaperspektiivin korjauskerroin: 1/cos(θ) referenssikulmasta. */
   perspectiveCorrectionFactor: number;
+  /** Pakopisteestä johdettu pystysuora kallistus β (°). null jos ei tunnistettu / ei käytetty. */
+  verticalTiltDeg: number | null;
+  /** Pakopistedetektion luotettavuus 0–1, null jos ei tunnistettu. */
+  verticalTiltConfidence: number | null;
+  /** Lähde, josta vertikaalinen kallistus saatiin. */
+  verticalTiltSource: "vanishing-point" | "sensor" | "none";
   dominantLineAngleDeg: number | null;
-  method: "basic" | "depth" | "depth+perspective";
+  method:
+    | "basic"
+    | "perspective"
+    | "keystone"
+    | "perspective+keystone";
 }
 
-/**
- * Polygon-based area measurement with full perspective correction.
- *
- * The user draws a polygon around the exact facade outline (corners + roof ridge).
- *
- * TWO perspective corrections are applied automatically:
- *
- * 1. HORIZONTAL (side-angle) — from reference line angle (roll-separated via MLSD):
- *    If the facade is viewed at angle θ from straight-on → multiply by 1/cos(θ).
- *
- * 2. VERTICAL (camera tilt) — depth map, per-pixel:
- *    For each pixel inside the polygon, weight = (refDepth / pixelDepth)².
- *    Falls back to Shoelace formula if depth map unavailable.
- *
- * Opening areas (windows/doors from SAM 3) are subtracted, also depth-weighted.
- */
+const ASSUMED_FOCAL_RATIO = 0.85;
+
 export async function calculatePolygonMeasurement(
   polygonPoints: Point[],
   masks: MaskResult[],
   imageWidth: number,
   imageHeight: number,
   reference: ReferenceData,
-  depthMapUrl?: string,
-  mlsdMapUrl?: string | null,
+  options?: {
+    mlsdMapUrl?: string | null;
+    useKeystoneCorrection?: boolean;
+    usePerspectiveCorrection?: boolean;
+    /** Optional camera tilt β (°) measured by gyroscope at capture time.
+     *  Overrides vanishing-point detection when provided. */
+    sensorTiltBetaDeg?: number | null;
+  },
 ): Promise<PreciseMeasurementResult> {
   const ppm = reference.pixelsPerMeter;
+  const useKeystone = options?.useKeystoneCorrection ?? true;
+  const usePerspective = options?.usePerspectiveCorrection ?? true;
+  const mlsdMapUrl = options?.mlsdMapUrl ?? null;
+  const sensorBeta = options?.sensorTiltBetaDeg ?? null;
 
-  // ── 1. Perspective correction — separated from phone roll via MLSD ─────────
+  // ── 1. Horizontal perspective from reference angle ─────────────────────────
   const refAngleDeg = reference.angleDeg ?? 0;
-  let perspectiveAngleDeg = refAngleDeg;
-  let rollDeg = 0;
-
-  if (mlsdMapUrl) {
-    try {
-      const mlsdCanvas = await loadImageToCanvas(mlsdMapUrl);
-      const mlsdData = mlsdCanvas
-        .getContext("2d")!
-        .getImageData(0, 0, mlsdCanvas.width, mlsdCanvas.height).data;
-      const extracted = extractRollAndPerspectiveFromMLSD(
-        mlsdData, mlsdCanvas.width, mlsdCanvas.height, refAngleDeg,
-      );
-      rollDeg = extracted.rollDeg;
-      perspectiveAngleDeg = extracted.perspectiveDeg;
-    } catch {
-      // MLSD unavailable — fall back to reference angle
-    }
-  }
-  void rollDeg;
-
   let perspectiveCorrectionFactor = 1;
-  if (Math.abs(perspectiveAngleDeg) > 1) {
-    const cosTheta = Math.cos(Math.abs(perspectiveAngleDeg) * Math.PI / 180);
+  if (usePerspective && Math.abs(refAngleDeg) > 1) {
+    const cosTheta = Math.cos((Math.abs(refAngleDeg) * Math.PI) / 180);
     if (cosTheta > 0.1) {
       perspectiveCorrectionFactor = Math.max(0.5, Math.min(2.5, 1 / cosTheta));
     }
   }
 
-  // ── 2. Rasterise polygon into a canvas mask ────────────────────────────────
+  // ── 2. Vertical keystone: vanishing point + sensor tilt ────────────────────
+  let vp: VanishingPointResult | null = null;
+  let verticalTiltSource: PreciseMeasurementResult["verticalTiltSource"] = "none";
+  let tiltBetaDeg: number | null = null;
+
+  if (useKeystone) {
+    if (sensorBeta !== null && Math.abs(sensorBeta) > 1) {
+      // Trust the gyroscope when available
+      tiltBetaDeg = sensorBeta;
+      verticalTiltSource = "sensor";
+    } else if (mlsdMapUrl) {
+      try {
+        vp = await findVerticalVanishingPoint(mlsdMapUrl, imageWidth, imageHeight);
+        if (vp && vp.confidence > 0.3 && Math.abs(vp.betaDeg) > 1) {
+          tiltBetaDeg = vp.betaDeg;
+          verticalTiltSource = "vanishing-point";
+        }
+      } catch {
+        // VP detection optional — silent fall-through
+      }
+    }
+  }
+
+  // Derive v_v in original image-pixel coords (signed offset from image center y).
+  // If sensorBeta is the source, v_v = -f / tan(β). If VP source, use vp.vyOffset.
+  let vyOffset: number | null = null;
+  if (verticalTiltSource === "vanishing-point" && vp) {
+    vyOffset = vp.vyOffset;
+  } else if (verticalTiltSource === "sensor" && tiltBetaDeg !== null) {
+    const f = ASSUMED_FOCAL_RATIO * imageHeight;
+    const tanB = Math.tan((Math.abs(tiltBetaDeg) * Math.PI) / 180);
+    if (tanB > 0.001) {
+      vyOffset = (tiltBetaDeg > 0 ? -1 : 1) * (f / tanB);
+    }
+  }
+
+  // ── 3. Rasterise polygon and integrate per-pixel area ─────────────────────
   const STRIDE = 2;
   const polyCanvas = document.createElement("canvas");
   polyCanvas.width = imageWidth;
@@ -100,46 +138,44 @@ export async function calculatePolygonMeasurement(
   polyCtx.fill();
   const polyData = polyCtx.getImageData(0, 0, imageWidth, imageHeight).data;
 
-  // ── 3. Depth-weighted pixel integration ───────────────────────────────────
-  let grossWeightedPixels = 0;
-  let grossRawPixels = 0;
-  let depthCorrectionFactor = 1;
+  // Reference line y-coord (signed offset from image center)
+  const cy = imageHeight / 2;
+  const refY = (reference.point1.y + reference.point2.y) / 2;
+  const vRefOffset = refY - cy;
 
-  if (depthMapUrl) {
-    try {
-      const depthCanvas = await loadImageToCanvas(depthMapUrl);
-      const dCtx = depthCanvas.getContext("2d")!;
-      const depthData = dCtx.getImageData(0, 0, depthCanvas.width, depthCanvas.height).data;
-      const dW = depthCanvas.width;
-      const dH = depthCanvas.height;
+  let rawPixelArea = 0;     // total pixel count inside polygon (uncorrected)
+  let weightedPixelArea = 0; // depth/keystone-weighted pixel count
 
-      const refDepth = sampleLineDepth(depthData, dW, reference.point1, reference.point2);
-
-      if (refDepth >= 1) {
-        for (let y = 0; y < imageHeight; y += STRIDE) {
-          for (let x = 0; x < imageWidth; x += STRIDE) {
-            if (polyData[(y * imageWidth + x) * 4] < 128) continue;
-            grossRawPixels += STRIDE * STRIDE;
-
-            const dx = Math.min(Math.round((x / imageWidth) * dW), dW - 1);
-            const dy = Math.min(Math.round((y / imageHeight) * dH), dH - 1);
-            const pixelDepth = depthData[(dy * dW + dx) * 4];
-            const w = pixelDepth > 0
-              ? Math.max(0.1, Math.min(4.0, (refDepth / pixelDepth) ** 2))
-              : 1;
-            grossWeightedPixels += w * STRIDE * STRIDE;
-          }
-        }
-        depthCorrectionFactor =
-          grossRawPixels > 0 ? grossWeightedPixels / grossRawPixels : 1;
+  if (vyOffset !== null && Math.abs(vyOffset) > imageHeight * 0.15) {
+    // Per-pixel keystone weighting
+    const vv = vyOffset;
+    // cos(β) for the global cos factor in dA. Tiny correction at small β.
+    const f = ASSUMED_FOCAL_RATIO * imageHeight;
+    const cosBeta = Math.abs(vv) / Math.sqrt(vv * vv + f * f);
+    // Constant factor (v_v − v_ref)² / cos(β) — absorbed into a normalisation
+    // that we divide out below by dividing by the weight at v_ref. Simpler:
+    // weight(v) = ((v_v − v_ref) / (v_v − v))³ / cosBeta, where the cosBeta
+    // is applied globally to total area.
+    const refDenom = vv - vRefOffset;
+    for (let y = 0; y < imageHeight; y += STRIDE) {
+      const v = y - cy;
+      const denom = vv - v;
+      // Avoid division by zero (denominator approaches 0 only at the vanishing
+      // point itself, which is outside the polygon).
+      if (Math.abs(denom) < 1) continue;
+      const ratio = refDenom / denom; // Z(v) / Z(v_ref)
+      const weight = ratio * ratio * ratio;
+      const rowOffset = y * imageWidth;
+      for (let x = 0; x < imageWidth; x += STRIDE) {
+        if (polyData[(rowOffset + x) * 4] < 128) continue;
+        rawPixelArea += STRIDE * STRIDE;
+        weightedPixelArea += weight * STRIDE * STRIDE;
       }
-    } catch {
-      // depth unavailable → fall through to Shoelace below
     }
-  }
-
-  // Fallback: Shoelace formula if depth integration didn't run
-  if (grossRawPixels === 0) {
+    // Apply global cos(β) factor: dA scales as 1/cos(β)
+    weightedPixelArea /= cosBeta;
+  } else {
+    // No keystone correction → simple pixel count via Shoelace formula
     let area = 0;
     const n = polygonPoints.length;
     for (let i = 0; i < n; i++) {
@@ -147,172 +183,102 @@ export async function calculatePolygonMeasurement(
       area += polygonPoints[i].x * polygonPoints[j].y;
       area -= polygonPoints[j].x * polygonPoints[i].y;
     }
-    grossRawPixels = Math.abs(area) / 2;
-    grossWeightedPixels = grossRawPixels;
+    rawPixelArea = Math.abs(area) / 2;
+    weightedPixelArea = rawPixelArea;
   }
 
-  const grossAreaM2 =
-    (grossWeightedPixels / (ppm * ppm)) * perspectiveCorrectionFactor;
+  const depthCorrectionFactor =
+    rawPixelArea > 0 ? weightedPixelArea / rawPixelArea : 1;
 
-  // ── 4. Opening areas (SAM 3 / HuggingFace masks) — also depth-weighted ──────
-  // Minimum opening area: 0.4% of total image pixels.
-  // This filters out thin decorative elements (fences, lattices, pipes) that
-  // segmentation models sometimes misclassify as windows/doors.
+  const grossAreaM2 =
+    (weightedPixelArea / (ppm * ppm)) * perspectiveCorrectionFactor;
+
+  // ── 4. Opening masks (windows + doors), with same keystone weighting ──────
   const minOpeningPixels = imageWidth * imageHeight * 0.004;
   const openingMasks = masks.filter((m) => m.category === "opening");
   let openingPixelsScaled = 0;
   for (const mask of openingMasks) {
     try {
       const mc = await loadImageToCanvas(mask.url);
-      const data = mc.getContext("2d")!.getImageData(0, 0, mc.width, mc.height).data;
+      const data = mc
+        .getContext("2d")!
+        .getImageData(0, 0, mc.width, mc.height).data;
       const hasTransparent = detectTransparentMask(data);
+      const scaleX = imageWidth / mc.width;
+      const scaleY = imageHeight / mc.height;
       let rawCount = 0;
-      for (let i = 0; i < data.length; i += 4) {
-        if (hasTransparent ? data[i + 3] > 127 : data[i] > 127) rawCount++;
+      let weightedCount = 0;
+      const vv = vyOffset;
+      const refDenom = vv !== null ? vv - vRefOffset : 0;
+      for (let my = 0; my < mc.height; my++) {
+        const yOrig = my * scaleY;
+        const v = yOrig - cy;
+        let weight = 1;
+        if (vv !== null && Math.abs(vv) > imageHeight * 0.15) {
+          const denom = vv - v;
+          if (Math.abs(denom) < 1) continue;
+          const ratio = refDenom / denom;
+          weight = ratio * ratio * ratio;
+        }
+        for (let mx = 0; mx < mc.width; mx++) {
+          const idx = (my * mc.width + mx) * 4;
+          const isSet = hasTransparent ? data[idx + 3] > 127 : data[idx] > 127;
+          if (!isSet) continue;
+          rawCount += scaleX * scaleY;
+          weightedCount += weight * scaleX * scaleY;
+        }
       }
-      const scaleFactor = (imageWidth * imageHeight) / (mc.width * mc.height);
-      const scaledCount = rawCount * scaleFactor;
-      // Skip tiny regions — likely noise, fences or lattice misclassified as openings
-      if (scaledCount < minOpeningPixels) continue;
-      openingPixelsScaled += scaledCount;
+      if (rawCount < minOpeningPixels) continue;
+      openingPixelsScaled += weightedCount;
     } catch {
-      // skip
+      // skip masks that fail to load
     }
   }
+
+  // Same global cos(β) factor for openings if keystone correction is active
+  if (vyOffset !== null && Math.abs(vyOffset) > imageHeight * 0.15) {
+    const f = ASSUMED_FOCAL_RATIO * imageHeight;
+    const cosBeta = Math.abs(vyOffset) / Math.sqrt(vyOffset * vyOffset + f * f);
+    openingPixelsScaled /= cosBeta;
+  }
+
   const openingAreaM2 =
-    (openingPixelsScaled / (ppm * ppm)) * depthCorrectionFactor * perspectiveCorrectionFactor;
+    (openingPixelsScaled / (ppm * ppm)) * perspectiveCorrectionFactor;
   const netAreaM2 = Math.max(grossAreaM2 - openingAreaM2, 0);
 
-  const method: PreciseMeasurementResult["method"] = depthMapUrl && grossRawPixels > 0
-    ? Math.abs(perspectiveAngleDeg) > 1 ? "depth+perspective" : "depth"
-    : Math.abs(perspectiveAngleDeg) > 1 ? "depth+perspective" : "basic";
+  const hasKeystone =
+    vyOffset !== null && Math.abs(vyOffset) > imageHeight * 0.15;
+  const hasPerspective = Math.abs(refAngleDeg) > 1;
+
+  let method: PreciseMeasurementResult["method"];
+  if (hasKeystone && hasPerspective) method = "perspective+keystone";
+  else if (hasKeystone) method = "keystone";
+  else if (hasPerspective) method = "perspective";
+  else method = "basic";
 
   return {
-    wallPixels: grossRawPixels,
+    wallPixels: rawPixelArea,
     openingPixels: openingPixelsScaled,
-    netWallPixels: Math.max(grossRawPixels - openingPixelsScaled, 0),
+    netWallPixels: Math.max(rawPixelArea - openingPixelsScaled, 0),
     pixelsPerMeter: ppm,
     wallAreaM2: netAreaM2,
     depthCorrectionFactor,
     perspectiveCorrectionFactor,
-    dominantLineAngleDeg: Math.abs(perspectiveAngleDeg) > 1 ? perspectiveAngleDeg : null,
+    verticalTiltDeg: tiltBetaDeg,
+    verticalTiltConfidence: vp?.confidence ?? (verticalTiltSource === "sensor" ? 1 : null),
+    verticalTiltSource,
+    dominantLineAngleDeg: hasPerspective ? refAngleDeg : null,
     method,
   };
 }
 
 // ─── Internal helpers ─────────────────────────────────────────────────────────
 
-/**
- * Returns true when the mask image uses the alpha channel to encode selection.
- * Binary masks are solid PNGs (alpha=255 everywhere).
- * Heuristic: scan the first ~200 pixels for any fully transparent pixel.
- */
 function detectTransparentMask(data: Uint8ClampedArray): boolean {
   for (let i = 3; i < Math.min(data.length, 800); i += 4) {
     if (data[i] < 10) return true;
   }
   return false;
-}
-
-/**
- * Sample average depth value along a line between two points.
- */
-function sampleLineDepth(
-  depthData: Uint8ClampedArray,
-  width: number,
-  p1: { x: number; y: number },
-  p2: { x: number; y: number },
-): number {
-  const steps = Math.max(Math.abs(p2.x - p1.x), Math.abs(p2.y - p1.y), 1);
-  let sum = 0;
-  let n = 0;
-  for (let t = 0; t <= steps; t++) {
-    const x = Math.round(p1.x + ((p2.x - p1.x) * t) / steps);
-    const y = Math.round(p1.y + ((p2.y - p1.y) * t) / steps);
-    if (x >= 0 && y >= 0) {
-      sum += depthData[(y * width + x) * 4];
-      n++;
-    }
-  }
-  return n > 0 ? sum / n : 0;
-}
-
-/**
- * Build a full 0–179° angle histogram from MLSD line pixels.
- */
-function buildMLSDAngleHistogram(
-  mlsdData: Uint8ClampedArray,
-  width: number,
-  height: number,
-): Float32Array {
-  const buckets = new Float32Array(180);
-  const STRIDE = 4;
-
-  for (let y = STRIDE; y < height - STRIDE; y += STRIDE) {
-    for (let x = STRIDE; x < width - STRIDE; x += STRIDE) {
-      if (mlsdData[(y * width + x) * 4] < 200) continue;
-
-      let bestDx = 0, bestDy = 0, bestDist = Infinity;
-
-      for (let dy = -STRIDE * 2; dy <= STRIDE * 2; dy += STRIDE) {
-        for (let dx = 0; dx <= STRIDE * 3; dx += STRIDE) {
-          if (dx === 0 && dy <= 0) continue;
-          const nx = x + dx, ny = y + dy;
-          if (nx < 0 || nx >= width || ny < 0 || ny >= height) continue;
-          if (mlsdData[(ny * width + nx) * 4] > 200) {
-            const dist = Math.sqrt(dx * dx + dy * dy);
-            if (dist < bestDist) { bestDist = dist; bestDx = dx; bestDy = dy; }
-          }
-        }
-      }
-
-      if (bestDist < Infinity && (bestDx !== 0 || bestDy !== 0)) {
-        const angleDeg = Math.atan2(bestDy, bestDx) * (180 / Math.PI);
-        const bucket = Math.round(((angleDeg % 180) + 180) % 180);
-        buckets[bucket] += 1;
-      }
-    }
-  }
-  return buckets;
-}
-
-/**
- * Separate phone roll from true perspective angle using MLSD line data.
- *
- * Vertical building lines tilt only from roll, not from perspective.
- *   roll        = dominant_vertical_angle − 90°
- *   perspective = reference_angle − roll
- */
-function extractRollAndPerspectiveFromMLSD(
-  mlsdData: Uint8ClampedArray,
-  width: number,
-  height: number,
-  referenceLineAngleDeg: number,
-): { rollDeg: number; perspectiveDeg: number } {
-  const buckets = buildMLSDAngleHistogram(mlsdData, width, height);
-
-  let vertCount = 0, vertAngle = 90;
-  for (let b = 65; b <= 115; b++) {
-    if (buckets[b] > vertCount) { vertCount = buckets[b]; vertAngle = b; }
-  }
-  const rollDeg = vertCount >= 8 ? (vertAngle - 90) : 0;
-
-  let horizCount = 0, horizAngle = 0;
-  for (let b = 0; b < 180; b++) {
-    const near = b <= 25 || b >= 155;
-    if (near && buckets[b] > horizCount) {
-      horizCount = buckets[b];
-      horizAngle = b <= 25 ? b : b - 180;
-    }
-  }
-
-  const combinedAngle =
-    Math.abs(referenceLineAngleDeg) > 0.5
-      ? referenceLineAngleDeg
-      : horizCount >= 5 ? horizAngle : 0;
-
-  const perspectiveDeg = combinedAngle - rollDeg;
-  return { rollDeg, perspectiveDeg };
 }
 
 function loadImageToCanvas(url: string): Promise<HTMLCanvasElement> {

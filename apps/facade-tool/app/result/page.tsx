@@ -32,9 +32,9 @@ export default function ResultPage() {
   const [isMeasuring, setIsMeasuring] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // Depth correction is unreliable for flat/close-up scenes — off by default.
-  // Perspective correction (reference-line angle) works well for angled outdoor facades.
-  const [useDepthCorrection, setUseDepthCorrection] = useState(false);
+  // Keystone (vertical) correction uses the vanishing point or sensor tilt — reliable for tilted photos
+  // Perspective correction (reference-line angle) handles side-angle / horizontal foreshortening
+  const [useKeystoneCorrection, setUseKeystoneCorrection] = useState(true);
   const [usePerspectiveCorrection, setUsePerspectiveCorrection] = useState(true);
 
   useEffect(() => {
@@ -66,8 +66,12 @@ export default function ResultPage() {
         session.imageWidth,
         session.imageHeight,
         session.reference,
-        useDepthCorrection ? session.depthMapUrl : undefined,
-        usePerspectiveCorrection ? session.mlsdMapUrl : null,
+        {
+          mlsdMapUrl: session.mlsdMapUrl,
+          useKeystoneCorrection,
+          usePerspectiveCorrection,
+          sensorTiltBetaDeg: session.captureTilt?.cameraTiltDeg ?? null,
+        },
       );
       setMeasurement(result);
       setOpenPanel("quote");
@@ -265,11 +269,13 @@ export default function ResultPage() {
                 subtitle={
                   measurement
                     ? `${measurement.wallAreaM2.toFixed(1)} m² — ${
-                        measurement.method === "depth+perspective"
-                          ? "monikulmio + perspektiivikorjaus"
-                          : measurement.method === "depth"
-                            ? "syvyyskorjattu"
-                            : "peruslaskenta"
+                        measurement.method === "perspective+keystone"
+                          ? "täysi perspektiivikorjaus"
+                          : measurement.method === "keystone"
+                            ? "pystyperspektiivi korjattu"
+                            : measurement.method === "perspective"
+                              ? "vaakaperspektiivi korjattu"
+                              : "peruslaskenta"
                       }`
                     : hasPolygon ? "Monikulmio + perspektiivikorjaus" : "Piirrä ensin rajaus"
                 }
@@ -312,28 +318,44 @@ export default function ResultPage() {
                     </div>
                   </div>
 
+                  {/* Capture tilt badge (if photo was taken with in-app camera) */}
+                  {session.captureTilt && (
+                    <div className="p-2.5 bg-blue-50 border border-blue-200 rounded-xl text-xs text-blue-700">
+                      <strong>Kameran kallistus tallennettu:</strong>{" "}
+                      {session.captureTilt.cameraTiltDeg.toFixed(1)}°
+                      {Math.abs(session.captureTilt.cameraTiltDeg) < 2
+                        ? " — suorassa, mittaus tarkka"
+                        : " — käytetään pystyperspektiivin korjaukseen"}
+                    </div>
+                  )}
+
                   {/* Correction toggles */}
                   <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl space-y-2">
-                    <p className="text-xs font-medium text-amber-800">Korjaukset</p>
+                    <p className="text-xs font-medium text-amber-800">Automaattiset korjaukset</p>
                     <p className="text-xs text-amber-700">
-                      <strong>Ulkojulkisivu vinokuvattuna:</strong> laita perspektiivikorjaus päälle.<br/>
-                      <strong>Tasainen seinä suoraan edestä:</strong> pidä molemmat pois.
+                      Korjaukset on järkevää pitää päällä — sovellus jättää ne huomiotta jos kuva on jo suora.
                     </p>
                     <label className="flex items-center justify-between gap-2 cursor-pointer">
-                      <span className="text-xs text-slate-700">Syvyyskorjaus <span className="text-slate-400">(epäluotettava lähikuvissa)</span></span>
+                      <span className="text-xs text-slate-700">
+                        Pystyperspektiivi
+                        <span className="text-slate-400"> (kallistus ylös/alas)</span>
+                      </span>
                       <button
-                        onClick={() => setUseDepthCorrection((v) => !v)}
+                        onClick={() => setUseKeystoneCorrection((v) => !v)}
                         className={`relative w-10 h-5 rounded-full transition-colors ${
-                          useDepthCorrection ? "bg-blue-500" : "bg-slate-300"
+                          useKeystoneCorrection ? "bg-blue-500" : "bg-slate-300"
                         }`}
                       >
                         <span className={`absolute top-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform ${
-                          useDepthCorrection ? "translate-x-5" : "translate-x-0.5"
+                          useKeystoneCorrection ? "translate-x-5" : "translate-x-0.5"
                         }`} />
                       </button>
                     </label>
                     <label className="flex items-center justify-between gap-2 cursor-pointer">
-                      <span className="text-xs text-slate-700">Perspektiivikorjaus <span className="text-slate-400">(referenssilinjan kulma)</span></span>
+                      <span className="text-xs text-slate-700">
+                        Vaakaperspektiivi
+                        <span className="text-slate-400"> (referenssilinjan kulma)</span>
+                      </span>
                       <button
                         onClick={() => setUsePerspectiveCorrection((v) => !v)}
                         className={`relative w-10 h-5 rounded-full transition-colors ${
@@ -363,14 +385,33 @@ export default function ResultPage() {
                         <span>{measurement.wallAreaM2.toFixed(2)} m²</span>
                       </div>
                       <div className="border-t border-green-200 pt-1 space-y-0.5 text-xs text-slate-500">
-                        <div className="flex justify-between">
-                          <span>Syvyyskorjaus</span>
-                          <span>{measurement.depthCorrectionFactor.toFixed(3)}×</span>
-                        </div>
+                        {measurement.verticalTiltDeg !== null && (
+                          <div className="flex justify-between">
+                            <span>Pystykallistus β</span>
+                            <span>
+                              {measurement.verticalTiltDeg.toFixed(1)}°
+                              <span className="text-slate-400">
+                                {" "}({measurement.verticalTiltSource === "sensor"
+                                  ? "anturi"
+                                  : "kuvasta"}
+                                {measurement.verticalTiltConfidence !== null &&
+                                  measurement.verticalTiltSource === "vanishing-point" &&
+                                  `, ${(measurement.verticalTiltConfidence * 100).toFixed(0)}% varmuus`})
+                              </span>
+                            </span>
+                          </div>
+                        )}
+                        {Math.abs(measurement.depthCorrectionFactor - 1) > 0.001 && (
+                          <div className="flex justify-between">
+                            <span>Keystone-kerroin</span>
+                            <span>{measurement.depthCorrectionFactor.toFixed(3)}×</span>
+                          </div>
+                        )}
                         {measurement.perspectiveCorrectionFactor !== 1 && (
                           <div className="flex justify-between">
-                            <span>Perspektiivikorjaus</span>
-                            <span>{measurement.perspectiveCorrectionFactor.toFixed(3)}×
+                            <span>Vaakaperspektiivi</span>
+                            <span>
+                              {measurement.perspectiveCorrectionFactor.toFixed(3)}×
                               {measurement.dominantLineAngleDeg !== null && (
                                 <span className="text-slate-400"> ({measurement.dominantLineAngleDeg.toFixed(1)}°)</span>
                               )}
