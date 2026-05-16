@@ -18,7 +18,6 @@ const HF_MODELS = [
 ];
 // Use new HuggingFace router URL (2024+) — old api-inference.huggingface.co gives 404
 const HF_BASE_URL = "https://router.huggingface.co/hf-inference/models";
-const WALL_CLASSES = ["facade", "wall"];
 const OPENING_CLASSES = ["window", "door"];
 
 type HfSegment = { label: string; score: number; mask: string };
@@ -79,16 +78,7 @@ async function runHuggingFaceFacade(imageUrl: string): Promise<{
 
     if (!segments) return null;
 
-    // Upload wall mask to fal.ai storage
-    let wallMaskUrl: string | null = null;
-    const wallSeg = segments.find((s) => WALL_CLASSES.includes(s.label));
-    if (wallSeg?.mask) {
-      const buf = Buffer.from(wallSeg.mask, "base64");
-      const file = new File([buf], "wall.png", { type: "image/png" });
-      wallMaskUrl = await uploadToFalStorage(file);
-    }
-
-    // Upload opening masks (window + door)
+    // Upload opening masks only (wall mask no longer needed — user draws polygon manually)
     const openingMasks: MaskResult[] = [];
     const openingSegs = segments.filter((s) => OPENING_CLASSES.includes(s.label));
     for (let i = 0; i < openingSegs.length; i++) {
@@ -99,8 +89,8 @@ async function runHuggingFaceFacade(imageUrl: string): Promise<{
       openingMasks.push({ index: i, url, width: 0, height: 0, category: "opening" });
     }
 
-    console.log(`[HF] ✓ model=${modelUsed} wall=${!!wallMaskUrl} openings=${openingMasks.length}`);
-    return { wallMaskUrl, openingMasks, modelUsed };
+    console.log(`[HF] ✓ model=${modelUsed} openings=${openingMasks.length}`);
+    return { wallMaskUrl: null, openingMasks, modelUsed };
   } catch (err) {
     console.warn("[HF] facade segmentation failed:", err);
     return null;
@@ -116,28 +106,17 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "imageUrl is required" }, { status: 400 });
     }
 
-    // Run in parallel:
-    // 1. HuggingFace (Xpitfire → Marco333) — best accuracy for real building facades
-    // 2. SAM 3 wall prompt — fallback wall mask for corner detection
-    // 3. SAM 3 opening prompt — fallback opening detection
+    // Run HuggingFace + SAM3 for openings in parallel.
+    // Wall mask is no longer needed (user draws polygon manually).
     const empty: Sam3Output = { masks: [], boxes: [], metadata: [] };
-    const [hfResult, sam3WallResult, sam3OpeningResult] = await Promise.all([
+    const [hfResult, sam3OpeningResult] = await Promise.all([
       runHuggingFaceFacade(imageUrl),
-      runSam3Prompted(
-        imageUrl,
-        "wooden wall cladding, wood siding, painted wood planks, horizontal boards, exterior house wall, painted surface",
-        8,
-      ).catch(() => empty),
       runSam3Prompted(
         imageUrl,
         "window, door, glass opening, entrance door, window frame, window pane",
         8,
       ).catch(() => empty),
     ]);
-
-    // Prefer HuggingFace wall mask; fall back to SAM 3
-    const wallMaskUrl =
-      hfResult?.wallMaskUrl ?? sam3WallResult.masks?.[0]?.url ?? null;
 
     // Prefer HuggingFace opening masks; fall back to SAM 3
     let masks: MaskResult[];
@@ -159,7 +138,8 @@ export async function POST(req: NextRequest) {
       ? `huggingface:${hfResult.modelUsed}`
       : "sam3-fallback";
 
-    return NextResponse.json({ masks, wallMaskUrl, source });
+    // wallMaskUrl is null — manual polygon mode
+    return NextResponse.json({ masks, wallMaskUrl: null, source });
   } catch (err) {
     console.error("[/api/segment]", err);
     return NextResponse.json(

@@ -32,7 +32,9 @@ export default function ResultPage() {
   const [isMeasuring, setIsMeasuring] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [useDepthCorrection, setUseDepthCorrection] = useState(true);
+  // Depth correction is unreliable for flat/close-up scenes — off by default.
+  // Perspective correction (reference-line angle) works well for angled outdoor facades.
+  const [useDepthCorrection, setUseDepthCorrection] = useState(false);
   const [usePerspectiveCorrection, setUsePerspectiveCorrection] = useState(true);
 
   useEffect(() => {
@@ -224,20 +226,16 @@ export default function ResultPage() {
                 title="1. Rajaa julkisivu"
                 subtitle={
                   hasPolygon
-                    ? `${activePolygon!.points.length} pistettä — ${
-                        session.wallMaskUrl ? "automaattisesti tunnistettu" : "manuaalisesti piirretty"
-                      }`
-                    : session.wallMaskUrl
-                      ? "Tekoäly tunnistaa rajat automaattisesti"
-                      : "Klikkaa talon nurkat"
+                    ? `${activePolygon!.points.length} pistettä — manuaalisesti piirretty`
+                    : "Klikkaa talon nurkat järjestyksessä"
                 }
                 isOpen={openPanel === "polygon"}
                 isDone={hasPolygon}
                 onToggle={() => setOpenPanel(openPanel === "polygon" ? "measure" : "polygon")}
               >
                 <p className="text-xs text-slate-500 mb-3">
-                  Tekoäly on tunnistanut seinän rajat automaattisesti. Tarkista ja hyväksy,
-                  tai säädä pisteitä tarvittaessa.
+                  Klikkaa talon kaikki kulmat järjestyksessä (esim. vasemmalta myötäpäivään).
+                  Harjakatossa lisää myös harjapisteet. Paina <strong>Valmis</strong> kun kaikki on merkitty.
                 </p>
                 <PolygonSelect
                   imageUrl={session.uploadedImageUrl}
@@ -247,9 +245,8 @@ export default function ResultPage() {
                     setPolygon(data);
                     setOpenPanel("measure");
                   }}
-                  autoDetectMaskUrl={session.wallMaskUrl}
                   reference={session.reference}
-                  depthMapUrl={useDepthCorrection ? session.depthMapUrl : undefined}
+                  depthMapUrl={session.depthMapUrl}
                 />
                 {hasPolygon && (
                   <button
@@ -319,11 +316,11 @@ export default function ResultPage() {
                   <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl space-y-2">
                     <p className="text-xs font-medium text-amber-800">Korjaukset</p>
                     <p className="text-xs text-amber-700">
-                      Ulkojulkisivu vinokuvattuna: molemmat päälle.
-                      Suora tasainen seinä: molemmat pois.
+                      <strong>Ulkojulkisivu vinokuvattuna:</strong> laita perspektiivikorjaus päälle.<br/>
+                      <strong>Tasainen seinä suoraan edestä:</strong> pidä molemmat pois.
                     </p>
                     <label className="flex items-center justify-between gap-2 cursor-pointer">
-                      <span className="text-xs text-slate-700">Syvyyskorjaus (kamera-etäisyys)</span>
+                      <span className="text-xs text-slate-700">Syvyyskorjaus <span className="text-slate-400">(epäluotettava lähikuvissa)</span></span>
                       <button
                         onClick={() => setUseDepthCorrection((v) => !v)}
                         className={`relative w-10 h-5 rounded-full transition-colors ${
@@ -336,7 +333,7 @@ export default function ResultPage() {
                       </button>
                     </label>
                     <label className="flex items-center justify-between gap-2 cursor-pointer">
-                      <span className="text-xs text-slate-700">Perspektiivikorjaus (kuvakulma)</span>
+                      <span className="text-xs text-slate-700">Perspektiivikorjaus <span className="text-slate-400">(referenssilinjan kulma)</span></span>
                       <button
                         onClick={() => setUsePerspectiveCorrection((v) => !v)}
                         className={`relative w-10 h-5 rounded-full transition-colors ${

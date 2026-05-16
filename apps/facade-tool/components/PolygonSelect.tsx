@@ -1,23 +1,18 @@
 "use client";
 
 import { useRef, useEffect, useState, useCallback } from "react";
-import { Hexagon, RotateCcw, Check, Undo2, Wand2, Loader2 } from "lucide-react";
+import { Hexagon, RotateCcw, Check, Undo2 } from "lucide-react";
 import type { Point, PolygonData, ReferenceData } from "@/lib/types";
-import { detectFacadeCorners } from "@/lib/cornerDetect";
 
 interface Props {
   imageUrl: string;
   imageWidth: number;
   imageHeight: number;
   onPolygonSet: (data: PolygonData) => void;
-  autoDetectMaskUrl?: string | null;
-  /** Reference data — provides pixelsPerMeter and line position for depth sampling. */
   reference?: ReferenceData;
-  /** Depth map URL — enables per-segment depth-corrected length display. */
   depthMapUrl?: string;
 }
 
-/** Cached depth map data for synchronous per-pixel sampling in redraw. */
 interface DepthCache {
   data: Uint8ClampedArray;
   width: number;
@@ -25,14 +20,13 @@ interface DepthCache {
   refDepth: number;
 }
 
-type Phase = "idle" | "detecting" | "review" | "drawing" | "done";
+type Phase = "drawing" | "done";
 
 export default function PolygonSelect({
   imageUrl,
   imageWidth,
   imageHeight,
   onPolygonSet,
-  autoDetectMaskUrl,
   reference,
   depthMapUrl,
 }: Props) {
@@ -42,8 +36,7 @@ export default function PolygonSelect({
   const [points, setPoints] = useState<Point[]>([]);
   const [canvasSize, setCanvasSize] = useState({ w: 0, h: 0 });
   const [scale, setScale] = useState(1);
-  const [phase, setPhase] = useState<Phase>(autoDetectMaskUrl ? "detecting" : "idle");
-  const [detectError, setDetectError] = useState<string | null>(null);
+  const [phase, setPhase] = useState<Phase>("drawing");
   const [depthReady, setDepthReady] = useState(false);
 
   // Load main image
@@ -61,7 +54,7 @@ export default function PolygonSelect({
     img.src = imageUrl;
   }, [imageUrl]);
 
-  // Load depth map and precompute reference depth
+  // Load depth map for segment length display
   useEffect(() => {
     if (!depthMapUrl || !reference) return;
     depthRef.current = null;
@@ -75,8 +68,6 @@ export default function PolygonSelect({
       const ctx = c.getContext("2d")!;
       ctx.drawImage(img, 0, 0);
       const { data } = ctx.getImageData(0, 0, img.width, img.height);
-
-      // Sample reference depth along the user-drawn reference line
       const sx = img.width / imageWidth;
       const sy = img.height / imageHeight;
       const p1 = { x: reference.point1.x * sx, y: reference.point1.y * sy };
@@ -91,49 +82,20 @@ export default function PolygonSelect({
           n++;
         }
       }
-      const refDepth = n > 0 ? sum / n : 128;
-      depthRef.current = { data, width: img.width, height: img.height, refDepth };
+      depthRef.current = { data, width: img.width, height: img.height, refDepth: n > 0 ? sum / n : 128 };
       setDepthReady(true);
     };
     img.src = depthMapUrl;
   }, [depthMapUrl, reference, imageWidth, imageHeight]);
 
-  // Auto-detect corners from SAM 3 wall mask
-  useEffect(() => {
-    if (!autoDetectMaskUrl || phase !== "detecting") return;
-    detectFacadeCorners(autoDetectMaskUrl, imageWidth, imageHeight)
-      .then((pts) => {
-        if (pts && pts.length >= 3) {
-          setPoints(pts);
-          setPhase("review");
-        } else {
-          setDetectError("Automaattinen tunnistus ei onnistunut — klikkaa nurkat itse.");
-          setPhase("idle");
-        }
-      })
-      .catch(() => {
-        setDetectError("Automaattinen tunnistus ei onnistunut — klikkaa nurkat itse.");
-        setPhase("idle");
-      });
-  }, [autoDetectMaskUrl, imageWidth, imageHeight, phase]);
-
-  /**
-   * Compute depth-corrected segment length in meters.
-   * Samples N points along the segment, averages depth correction per point:
-   *   correctedMeters = rawMeters × (refDepth / avgDepth)
-   * Closer pixels (high depth value) → over-counted → scale down.
-   * Farther pixels (low depth value) → under-counted → scale up.
-   */
   const getSegmentLength = useCallback((a: Point, b: Point): number | null => {
     if (!reference || reference.pixelsPerMeter <= 0) return null;
     const dx = b.x - a.x;
     const dy = b.y - a.y;
     const pixLen = Math.sqrt(dx * dx + dy * dy);
     const rawMeters = pixLen / reference.pixelsPerMeter;
-
     const dc = depthRef.current;
     if (!dc || dc.refDepth < 1) return rawMeters;
-
     const N = Math.max(8, Math.round(pixLen / 8));
     let corrSum = 0;
     for (let t = 0; t <= N; t++) {
@@ -145,9 +107,8 @@ export default function PolygonSelect({
       corrSum += d > 0 ? Math.max(0.2, Math.min(5.0, dc.refDepth / d)) : 1;
     }
     return rawMeters * (corrSum / (N + 1));
-  }, [reference, imageWidth, imageHeight]);
+  }, [reference, imageWidth, imageHeight, depthReady]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Redraw canvas
   const redraw = useCallback(() => {
     const canvas = canvasRef.current;
     const img = imageRef.current;
@@ -155,18 +116,18 @@ export default function PolygonSelect({
     const ctx = canvas.getContext("2d")!;
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-
     if (points.length === 0) return;
+
     const sx = (p: Point) => p.x * scale;
     const sy = (p: Point) => p.y * scale;
 
-    // Polygon fill
+    // Polygon fill + outline
     if (points.length >= 3) {
       ctx.beginPath();
       ctx.moveTo(sx(points[0]), sy(points[0]));
       for (let i = 1; i < points.length; i++) ctx.lineTo(sx(points[i]), sy(points[i]));
       ctx.closePath();
-      ctx.fillStyle = "rgba(34, 197, 94, 0.20)";
+      ctx.fillStyle = "rgba(34, 197, 94, 0.18)";
       ctx.fill();
       ctx.strokeStyle = phase === "done" ? "#16a34a" : "#f59e0b";
       ctx.lineWidth = 2.5;
@@ -187,51 +148,31 @@ export default function PolygonSelect({
       const closed = points.length >= 3;
       const segCount = closed ? points.length : points.length - 1;
       const fontSize = Math.max(11, Math.round(canvas.width / 45));
-
       for (let i = 0; i < segCount; i++) {
         const a = points[i];
         const b = points[(i + 1) % points.length];
         const meters = getSegmentLength(a, b);
         if (meters === null || meters < 0.05) continue;
-
         const label = meters >= 10 ? `${meters.toFixed(1)} m` : `${meters.toFixed(2)} m`;
-
-        // Midpoint + perpendicular offset
         const mx = (sx(a) + sx(b)) / 2;
         const my = (sy(a) + sy(b)) / 2;
         const angle = Math.atan2(b.y - a.y, b.x - a.x);
         const offset = fontSize + 4;
         const tx = mx - Math.sin(angle) * offset;
         const ty = my + Math.cos(angle) * offset;
-
         ctx.save();
         ctx.font = `bold ${fontSize}px sans-serif`;
         ctx.textAlign = "center";
         ctx.textBaseline = "middle";
-
-        // Background pill
         const tw = ctx.measureText(label).width;
         const pad = 4;
-        const bx = tx - tw / 2 - pad;
-        const by = ty - fontSize / 2 - pad / 2;
-        const bw = tw + pad * 2;
-        const bh = fontSize + pad;
-        const rr = 4;
+        const bx = tx - tw / 2 - pad, by = ty - fontSize / 2 - pad / 2;
+        const bw = tw + pad * 2, bh = fontSize + pad;
         ctx.beginPath();
-        ctx.moveTo(bx + rr, by);
-        ctx.lineTo(bx + bw - rr, by);
-        ctx.quadraticCurveTo(bx + bw, by, bx + bw, by + rr);
-        ctx.lineTo(bx + bw, by + bh - rr);
-        ctx.quadraticCurveTo(bx + bw, by + bh, bx + bw - rr, by + bh);
-        ctx.lineTo(bx + rr, by + bh);
-        ctx.quadraticCurveTo(bx, by + bh, bx, by + bh - rr);
-        ctx.lineTo(bx, by + rr);
-        ctx.quadraticCurveTo(bx, by, bx + rr, by);
-        ctx.closePath();
-        ctx.fillStyle = "rgba(0,0,0,0.70)";
+        ctx.roundRect(bx, by, bw, bh, 4);
+        ctx.fillStyle = "rgba(0,0,0,0.68)";
         ctx.fill();
-
-        ctx.fillStyle = "#ffffff";
+        ctx.fillStyle = "#fff";
         ctx.fillText(label, tx, ty);
         ctx.restore();
       }
@@ -240,9 +181,8 @@ export default function PolygonSelect({
     // Corner dots with numbers
     for (let i = 0; i < points.length; i++) {
       const p = points[i];
-      const r = 7;
       ctx.beginPath();
-      ctx.arc(sx(p), sy(p), r, 0, Math.PI * 2);
+      ctx.arc(sx(p), sy(p), 7, 0, Math.PI * 2);
       ctx.fillStyle = phase === "done" ? "#16a34a" : "#f59e0b";
       ctx.fill();
       ctx.strokeStyle = "#fff";
@@ -254,18 +194,19 @@ export default function PolygonSelect({
       ctx.textBaseline = "middle";
       ctx.fillText(String(i + 1), sx(p), sy(p));
     }
-  }, [points, canvasSize, scale, phase, reference, getSegmentLength, depthReady]); // depthReady triggers redraw when depth loads
+  }, [points, canvasSize, scale, phase, reference, getSegmentLength]);
 
   useEffect(() => { redraw(); }, [redraw]);
 
   const handleCanvasClick = useCallback(
     (e: React.MouseEvent<HTMLCanvasElement>) => {
-      if (phase !== "drawing" && phase !== "review") return;
+      if (phase !== "drawing") return;
       const canvas = canvasRef.current!;
       const rect = canvas.getBoundingClientRect();
-      const x = (e.clientX - rect.left) / scale;
-      const y = (e.clientY - rect.top) / scale;
-      setPoints((prev) => [...prev, { x, y }]);
+      setPoints((prev) => [...prev, {
+        x: (e.clientX - rect.left) / scale,
+        y: (e.clientY - rect.top) / scale,
+      }]);
     },
     [phase, scale],
   );
@@ -276,66 +217,31 @@ export default function PolygonSelect({
     onPolygonSet({ points });
   };
 
-  const handleUndo = () => setPoints((prev) => prev.slice(0, -1));
+  const handleUndo = () => {
+    if (phase === "done") setPhase("drawing");
+    setPoints((prev) => prev.slice(0, -1));
+  };
 
   const handleReset = () => {
     setPoints([]);
-    setPhase(autoDetectMaskUrl ? "detecting" : "idle");
-    setDetectError(null);
-  };
-
-  const handleStartManual = () => {
-    setPoints([]);
     setPhase("drawing");
-    setDetectError(null);
-  };
-
-  const handleReDetect = () => {
-    setPoints([]);
-    setPhase("detecting");
-    setDetectError(null);
   };
 
   return (
     <div className="space-y-3">
-      {/* Status */}
-      <div className="flex items-start gap-2 text-sm text-slate-600">
-        <Hexagon className="w-4 h-4 text-green-600 mt-0.5 shrink-0" />
-        {phase === "detecting" && (
-          <span className="text-blue-700 font-medium flex items-center gap-1.5">
-            <Loader2 className="w-3.5 h-3.5 animate-spin" />
-            Tunnistetaan seinän rajoja automaattisesti...
+      {/* Instruction */}
+      <div className="flex items-start gap-2 text-sm">
+        <Hexagon className="w-4 h-4 text-amber-500 mt-0.5 shrink-0" />
+        {phase === "drawing" ? (
+          <span className="text-slate-700">
+            Klikkaa talon nurkat <strong>järjestyksessä</strong> — ala vasemmalta, kierry myötäpäivään.
+            {points.length === 0 && " Tarvitaan vähintään 3 pistettä."}
+            {points.length > 0 && points.length < 3 && ` ${points.length} pistettä — lisää vähintään ${3 - points.length} lisää.`}
+            {points.length >= 3 && <span className="text-green-700 font-medium"> {points.length} pistettä — paina Valmis kun kaikki kulmat on merkitty.</span>}
           </span>
-        )}
-        {phase === "review" && (
-          <span className="text-amber-700 font-medium">
-            Tekoäly merkitsi <strong>{points.length} nurkkapistettä</strong> automaattisesti.
-            Tarkista ja hyväksy, tai lisää/poista pisteitä.
-          </span>
-        )}
-        {phase === "idle" && !detectError && (
-          <span>
-            Klikkaa <strong>&quot;Merkitse nurkat&quot;</strong> ja klikkaa talon
-            nurkat järjestyksessä — räystäät, harjapiste ja kaikki kulmat.
-          </span>
-        )}
-        {phase === "idle" && detectError && (
-          <span className="text-red-600">{detectError}</span>
-        )}
-        {phase === "drawing" && (
-          <span className="font-medium text-green-700">
-            Klikkaa nurkat järjestyksessä.{" "}
-            {points.length < 3
-              ? `Tarvitaan vähintään 3 pistettä. (${points.length} lisätty)`
-              : `${points.length} pistettä — paina Valmis.`}
-          </span>
-        )}
-        {phase === "done" && (
-          <span className="font-medium text-green-700">
+        ) : (
+          <span className="text-green-700 font-medium">
             Julkisivu rajattu — {points.length} pistettä.
-            {depthMapUrl && depthReady && (
-              <span className="text-slate-500 font-normal"> Pituudet syvyyskorjattu.</span>
-            )}
           </span>
         )}
       </div>
@@ -347,71 +253,34 @@ export default function PolygonSelect({
           width={canvasSize.w}
           height={canvasSize.h}
           onClick={handleCanvasClick}
-          className={`block w-full ${
-            phase === "drawing" || phase === "review" ? "cursor-crosshair" : "cursor-default"
-          }`}
+          className={`block w-full ${phase === "drawing" ? "cursor-crosshair" : "cursor-default"}`}
         />
-        {phase === "detecting" && (
-          <div className="absolute inset-0 flex items-center justify-center bg-black/40 backdrop-blur-sm">
-            <div className="flex flex-col items-center gap-2 text-white text-sm">
-              <Loader2 className="w-6 h-6 animate-spin" />
-              <span>Analysoidaan seinän rajoja...</span>
-            </div>
-          </div>
-        )}
       </div>
 
       {/* Controls */}
-      <div className="flex flex-wrap items-center gap-2">
-        {phase === "review" && (
-          <button
-            onClick={handleConfirm}
-            className="flex items-center gap-1.5 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors text-sm font-medium"
-          >
-            <Check className="w-4 h-4" />
-            Hyväksy ({points.length} pistettä)
-          </button>
-        )}
+      <div className="flex flex-wrap gap-2">
         {phase === "drawing" && points.length >= 3 && (
           <button
             onClick={handleConfirm}
-            className="flex items-center gap-1.5 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors text-sm font-medium"
+            className="flex items-center gap-1.5 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 text-sm font-medium"
           >
             <Check className="w-4 h-4" />
             Valmis ({points.length} pistettä)
           </button>
         )}
-        {(phase === "idle" || phase === "review") && (
-          <button
-            onClick={handleStartManual}
-            className="flex items-center gap-1.5 px-3 py-2 border border-slate-300 text-slate-600 rounded-lg hover:bg-slate-50 transition-colors text-sm"
-          >
-            <Hexagon className="w-4 h-4" />
-            {phase === "review" ? "Piirrä itse" : "Merkitse nurkat"}
-          </button>
-        )}
-        {autoDetectMaskUrl && (phase === "idle" || phase === "review") && (
-          <button
-            onClick={handleReDetect}
-            className="flex items-center gap-1.5 px-3 py-2 border border-blue-200 text-blue-600 rounded-lg hover:bg-blue-50 transition-colors text-sm"
-          >
-            <Wand2 className="w-4 h-4" />
-            Tunnista uudelleen
-          </button>
-        )}
-        {(phase === "drawing" || phase === "review") && points.length > 0 && (
+        {points.length > 0 && (
           <button
             onClick={handleUndo}
-            className="flex items-center gap-1.5 px-3 py-2 text-slate-600 border border-slate-300 rounded-lg hover:bg-slate-50 transition-colors text-sm"
+            className="flex items-center gap-1.5 px-3 py-2 border border-slate-300 text-slate-600 rounded-lg hover:bg-slate-50 text-sm"
           >
             <Undo2 className="w-4 h-4" />
             Poista viimeinen
           </button>
         )}
-        {phase !== "idle" && phase !== "detecting" && (
+        {points.length > 0 && (
           <button
             onClick={handleReset}
-            className="flex items-center gap-1.5 px-3 py-2 text-slate-500 border border-slate-200 rounded-lg hover:bg-slate-50 transition-colors text-sm"
+            className="flex items-center gap-1.5 px-3 py-2 border border-slate-200 text-slate-500 rounded-lg hover:bg-slate-50 text-sm"
           >
             <RotateCcw className="w-4 h-4" />
             Aloita alusta
