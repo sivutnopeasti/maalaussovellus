@@ -9,9 +9,9 @@ interface Props {
   onClose: () => void;
 }
 
-interface DeviceOrientationEventWithPermission extends typeof DeviceOrientationEvent {
+type DeviceOrientationEventWithPermission = typeof DeviceOrientationEvent & {
   requestPermission?: () => Promise<"granted" | "denied">;
-}
+};
 
 /**
  * In-app camera with live bubble level.
