@@ -106,6 +106,7 @@ export default function HomePage() {
     dimensions: { w: number; h: number },
     ref: ReferenceData,
     tilt: CaptureTilt | null,
+    autoWallHeightM: number | undefined,
   ) => {
     setStep("analysing");
     setError(null);
@@ -126,8 +127,7 @@ export default function HomePage() {
         imageHeight: dimensions.h,
         reference: ref,
         captureTilt: tilt ?? undefined,
-        autoWallHeightM:
-          autoMode && storedWallHeight ? storedWallHeight.valueM : undefined,
+        autoWallHeightM,
       };
 
       sessionStorage.setItem("facadeSession", JSON.stringify(session));
@@ -135,7 +135,7 @@ export default function HomePage() {
     } catch (err) {
       console.error(err);
       setError(err instanceof Error ? err.message : "Tuntematon virhe.");
-      setStep(autoMode ? "capture" : "reference");
+      setStep(autoWallHeightM ? "capture" : "reference");
     }
   };
 
@@ -149,16 +149,22 @@ export default function HomePage() {
     setImageDataUrl(dataUrl);
     setCaptureTilt(tilt);
 
+    // Read the stored wall height SYNCHRONOUSLY from localStorage rather
+    // than from React state. This avoids closure-staleness issues when the
+    // home page is re-mounted from the result page — the React state may
+    // still be `null` while the value already exists in localStorage.
+    const wh = getStoredWallHeight();
+
     const img = new Image();
     img.onload = () => {
       const dims = { w: img.width, h: img.height };
       setImageDimensions(dims);
 
-      // Auto-mode: known wall corner height → skip the manual reference
-      // line step and analyse straight away.
-      if (autoMode && storedWallHeight) {
+      if (wh && wh.valueM > 0) {
+        // Auto-mode: known wall corner height → skip the manual reference
+        // line step and analyse straight away.
         setReference(PLACEHOLDER_REFERENCE);
-        void runAnalysis(file, dims, PLACEHOLDER_REFERENCE, tilt);
+        void runAnalysis(file, dims, PLACEHOLDER_REFERENCE, tilt, wh.valueM);
       } else {
         setReference(null);
         setStep("reference");
@@ -185,7 +191,8 @@ export default function HomePage() {
 
   const handleAnalyse = () => {
     if (!imageFile || !reference) return;
-    void runAnalysis(imageFile, imageDimensions, reference, captureTilt);
+    // Manual reference path → never carry an autoWallHeightM
+    void runAnalysis(imageFile, imageDimensions, reference, captureTilt, undefined);
   };
 
   const STEPS = [

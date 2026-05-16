@@ -16,9 +16,9 @@
 import type { Point } from "./types";
 
 /** Edges whose direction deviates this much from vertical are still treated
- *  as a wall corner. 15° tolerates slightly imperfect clicking and mild
- *  perspective tilt. */
-const VERTICAL_TOLERANCE_DEG = 15;
+ *  as a wall corner. 22° tolerates slightly imperfect clicking, mild
+ *  perspective tilt, and small keystone artefacts in the polygon. */
+const VERTICAL_TOLERANCE_DEG = 22;
 
 /** Edges shorter than this (in pixels) are ignored — they are too small to
  *  represent a full wall corner reliably. */

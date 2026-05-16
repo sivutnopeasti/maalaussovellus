@@ -64,6 +64,12 @@ export interface AnalysisSession {
    * `reference` in this case is a placeholder (pixelsPerMeter = 0).
    */
   autoWallHeightM?: number;
+  /**
+   * URL of the M-LSD line map (white lines on black background) used to
+   * snap polygon clicks onto detected structural edges. Generated
+   * asynchronously by /api/lines on the result page.
+   */
+  mlsdMapUrl?: string;
 }
 
 export interface MeasurementResult {

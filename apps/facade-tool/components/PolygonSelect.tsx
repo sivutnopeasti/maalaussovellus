@@ -1,9 +1,10 @@
 "use client";
 
 import { useRef, useEffect, useState, useCallback, useMemo } from "react";
-import { Hexagon, RotateCcw, Check, Undo2 } from "lucide-react";
+import { Hexagon, RotateCcw, Check, Undo2, Magnet } from "lucide-react";
 import type { Point, PolygonData, ReferenceData } from "@/lib/types";
 import { findReferenceVerticalEdge } from "@/lib/wallHeight";
+import { buildLineMap, snapToNearestLine, type LineMapData } from "@/lib/lineSnap";
 
 interface Props {
   imageUrl: string;
@@ -19,9 +20,21 @@ interface Props {
    * against a previously measured corner height.
    */
   autoWallHeightM?: number;
+  /**
+   * URL of the M-LSD line map (white lines on black background). When
+   * provided, clicks are snapped to the nearest detected structural line
+   * within ~3% of the image diagonal — making polygon corner placement
+   * pixel-accurate.
+   */
+  mlsdMapUrl?: string;
 }
 
 type Phase = "drawing" | "done";
+
+/** Snap radius as a fraction of the image diagonal. ~3% is enough to
+ *  catch slightly-imperfect clicks but small enough to avoid pulling
+ *  to a wrong nearby line. */
+const SNAP_RADIUS_FRACTION = 0.03;
 
 export default function PolygonSelect({
   imageUrl,
@@ -30,10 +43,17 @@ export default function PolygonSelect({
   onPolygonSet,
   reference,
   autoWallHeightM,
+  mlsdMapUrl,
 }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const imageRef = useRef<HTMLImageElement | null>(null);
+  const lineMapRef = useRef<LineMapData | null>(null);
+  const [lineMapReady, setLineMapReady] = useState(false);
+  const [snapEnabled, setSnapEnabled] = useState(true);
   const [points, setPoints] = useState<Point[]>([]);
+  const [snapHint, setSnapHint] = useState<{ from: Point; to: Point } | null>(
+    null,
+  );
   const [canvasSize, setCanvasSize] = useState({ w: 0, h: 0 });
   const [scale, setScale] = useState(1);
   const [phase, setPhase] = useState<Phase>("drawing");
@@ -51,6 +71,32 @@ export default function PolygonSelect({
     };
     img.src = imageUrl;
   }, [imageUrl]);
+
+  // Load and decode the M-LSD line map for click snapping. We do this
+  // off-screen as soon as the URL is available — typically before the
+  // user has finished placing their first point.
+  useEffect(() => {
+    if (!mlsdMapUrl) return;
+    let cancelled = false;
+    const img = new Image();
+    img.crossOrigin = "anonymous";
+    img.onload = () => {
+      if (cancelled) return;
+      try {
+        lineMapRef.current = buildLineMap(img);
+        setLineMapReady(true);
+      } catch (err) {
+        console.warn("[PolygonSelect] failed to decode MLSD map", err);
+      }
+    };
+    img.onerror = () => {
+      if (!cancelled) console.warn("[PolygonSelect] MLSD image failed to load");
+    };
+    img.src = mlsdMapUrl;
+    return () => {
+      cancelled = true;
+    };
+  }, [mlsdMapUrl]);
 
   // Effective pixels-per-meter for the segment labels. Two sources:
   //  1) Manual reference (`reference.pixelsPerMeter`) — used in photo 1.
@@ -166,7 +212,27 @@ export default function PolygonSelect({
       ctx.textBaseline = "middle";
       ctx.fillText(String(i + 1), sx(p), sy(p));
     }
-  }, [points, canvasSize, scale, phase, effectivePpm, getSegmentLength]);
+
+    // Snap hint — short flash showing how the click was nudged onto a
+    // detected building edge. Cleared after ~350 ms.
+    if (snapHint) {
+      ctx.save();
+      ctx.strokeStyle = "#22d3ee";
+      ctx.lineWidth = 2;
+      ctx.setLineDash([3, 3]);
+      ctx.beginPath();
+      ctx.moveTo(sx(snapHint.from), sy(snapHint.from));
+      ctx.lineTo(sx(snapHint.to), sy(snapHint.to));
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.beginPath();
+      ctx.arc(sx(snapHint.to), sy(snapHint.to), 11, 0, Math.PI * 2);
+      ctx.strokeStyle = "#22d3ee";
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+      ctx.restore();
+    }
+  }, [points, canvasSize, scale, phase, effectivePpm, getSegmentLength, snapHint]);
 
   useEffect(() => {
     redraw();
@@ -177,15 +243,32 @@ export default function PolygonSelect({
       if (phase !== "drawing") return;
       const canvas = canvasRef.current!;
       const rect = canvas.getBoundingClientRect();
-      setPoints((prev) => [
-        ...prev,
-        {
-          x: (e.clientX - rect.left) / scale,
-          y: (e.clientY - rect.top) / scale,
-        },
-      ]);
+      const rawX = (e.clientX - rect.left) / scale;
+      const rawY = (e.clientY - rect.top) / scale;
+      const raw: Point = { x: rawX, y: rawY };
+
+      // Try snapping to the nearest MLSD line pixel (if the map is
+      // loaded and snap is on). The line map is generated from the
+      // source image so its coordinate system matches the points we
+      // store internally.
+      let final: Point = raw;
+      if (snapEnabled && lineMapRef.current) {
+        const lm = lineMapRef.current;
+        // Map could be at a different resolution than the source — use
+        // its width vs the displayed image to derive a scale factor.
+        const lmScale = lm.width / imageWidth;
+        const diag = Math.hypot(imageWidth, imageHeight);
+        const radius = diag * SNAP_RADIUS_FRACTION;
+        const snapped = snapToNearestLine(raw, lm, radius, lmScale);
+        if (snapped) {
+          final = snapped;
+          setSnapHint({ from: raw, to: snapped });
+          window.setTimeout(() => setSnapHint(null), 350);
+        }
+      }
+      setPoints((prev) => [...prev, final]);
     },
-    [phase, scale],
+    [phase, scale, snapEnabled, imageWidth, imageHeight],
   );
 
   const handleConfirm = () => {
@@ -237,6 +320,36 @@ export default function PolygonSelect({
               <> Klikkaa ensin pystysuora nurkka ylhäältä alas, niin mitat ilmestyvät.</>
             )}
           </span>
+        </div>
+      )}
+
+      {mlsdMapUrl && (
+        <div className="flex items-center justify-between gap-3 px-3 py-2 bg-cyan-50 border border-cyan-200 rounded-lg text-xs">
+          <div className="flex items-center gap-2 text-cyan-800">
+            <Magnet className="w-4 h-4" />
+            <span>
+              <strong>Reunatunnistus</strong>{" "}
+              {!lineMapReady ? (
+                <span className="text-cyan-600">— ladataan…</span>
+              ) : snapEnabled ? (
+                <span>— klikit kiinnittyvät talon reunoihin.</span>
+              ) : (
+                <span className="text-cyan-600">— pois käytöstä.</span>
+              )}
+            </span>
+          </div>
+          {lineMapReady && (
+            <button
+              onClick={() => setSnapEnabled((s) => !s)}
+              className={`px-2 py-1 rounded font-medium transition-colors ${
+                snapEnabled
+                  ? "bg-cyan-600 text-white hover:bg-cyan-700"
+                  : "border border-cyan-300 text-cyan-700 hover:bg-cyan-100"
+              }`}
+            >
+              {snapEnabled ? "Päällä" : "Pois"}
+            </button>
+          )}
         </div>
       )}
 

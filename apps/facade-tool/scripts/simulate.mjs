@@ -13,7 +13,7 @@
 // Toistetaan lib/wallHeight.ts -funktiot puhtaalla JS:llä (samat raja-arvot)
 // ────────────────────────────────────────────────────────────────────────────
 
-const VERTICAL_TOLERANCE_DEG = 15;
+const VERTICAL_TOLERANCE_DEG = 22;
 const MIN_EDGE_PIXELS = 30;
 
 function findVerticalEdges(polygon) {
@@ -336,12 +336,12 @@ test("3. Kahden kuvan työnkulku: auto-referenssi toiselle kuvalle", () => {
 });
 
 test("4. Reunatapaus: polygonissa ei pystyreunoja → autovirhe", () => {
-  // Vino paralleeligrammi — kaikki reunat liian vinoja
+  // Vino paralleeligrammi — kaikki reunat selvästi yli 22° pystystä
   const slantedPolygon = [
-    { x: 100, y: 800 },
-    { x: 300, y: 200 },
-    { x: 1500, y: 100 },
-    { x: 1300, y: 700 },
+    { x: 100, y: 800 }, // 1→2: dx=400, dy=-600 → atan(400/600)≈33,7° (vino)
+    { x: 500, y: 200 },
+    { x: 1700, y: 100 }, // 2→3: vaakatasoinen
+    { x: 1300, y: 700 }, // 3→4: dx=-400, dy=600 → 33,7° (vino)
   ];
   const result = calculateAutoArea(slantedPolygon, 3.6);
   return assertTrue("Auto-virhe palautetaan", !!result.error);
@@ -361,7 +361,7 @@ test("5. Reunatapaus: kolmio jossa vain yksi pystyreuna", () => {
   return ok && assertApproxEqual("Korkeus yhdestä reunasta", h, 6.0, 0.02);
 });
 
-test("6. ±15° toleranssi: hieman vino reuna hyväksytään", () => {
+test("6. ±22° toleranssi: hieman vino reuna hyväksytään", () => {
   // Lievä vinous (10° pystystä) — pitäisi hyväksyä
   const slightlyTilted = [
     { x: 100, y: 800 },
@@ -373,14 +373,14 @@ test("6. ±15° toleranssi: hieman vino reuna hyväksytään", () => {
   return assertTrue("Lievästi vino pystyreuna hyväksytty", edges.length >= 1);
 });
 
-test("7. ±15° toleranssi: liian vinot reunat hylätään", () => {
-  // Polygoni jossa KAIKKI sivut > 15° pystystä.
+test("7. ±22° toleranssi: liian vinot reunat hylätään", () => {
+  // Polygoni jossa KAIKKI sivut > 22° pystystä.
   const tooTilted = [
-    { x: 100, y: 800 }, // 1. reuna 1→2: dx=200, dy=-400 → 26,6° (hylätään)
-    { x: 300, y: 400 },
-    { x: 900, y: 200 }, // 2. reuna 2→3: dx=600, dy=-200 → 71,6° (vaaka)
-    { x: 1100, y: 700 }, // 3. reuna 3→4: dx=200, dy=500 → 21,8° (hylätään)
-    // 4. reuna 4→1: dx=-1000, dy=100 → ~84° (vaaka)
+    { x: 100, y: 800 }, // 1. reuna 1→2: dx=250, dy=-400 → atan(250/400) ≈ 32° (hylätään)
+    { x: 350, y: 400 },
+    { x: 900, y: 200 }, // 2. reuna 2→3: dx=550, dy=-200 → ≈70° (vaaka)
+    { x: 1150, y: 700 }, // 3. reuna 3→4: dx=250, dy=500 → ≈26,6° (hylätään)
+    // 4. reuna 4→1: dx=-1050, dy=100 → ≈84° (vaaka)
   ];
   const edges = findVerticalEdges(tooTilted);
   const verticalsFound = edges.length;
@@ -571,6 +571,140 @@ test("11. Vertailu: realistinen pieni talo, kahden kuvan ala", () => {
   ok &= assertApproxEqual("Pitkä sivu (43,2 m²)", auto.areaM2, 43.2, 0.03);
   ok &= assertApproxEqual("Koko talo (153,6 m²)", total, 153.6, 0.03);
   return !!ok;
+});
+
+// ────────────────────────────────────────────────────────────────────────────
+// MLSD-snap simulaatio (lib/lineSnap.ts logiikka)
+// ────────────────────────────────────────────────────────────────────────────
+
+/** Tuotetaan synteettinen viivakartta jossa on suorakulmainen "talon nurkka"
+ *  (kaksi viivaa joiden risteyksessä on oikea nurkka). */
+function buildSyntheticLineMap(w, h, lines) {
+  const mask = new Uint8Array(w * h);
+  for (const [x1, y1, x2, y2] of lines) {
+    const dx = x2 - x1;
+    const dy = y2 - y1;
+    const steps = Math.ceil(Math.max(Math.abs(dx), Math.abs(dy)));
+    for (let s = 0; s <= steps; s++) {
+      const t = s / steps;
+      const x = Math.round(x1 + dx * t);
+      const y = Math.round(y1 + dy * t);
+      if (x >= 0 && x < w && y >= 0 && y < h) mask[y * w + x] = 1;
+    }
+  }
+  return { width: w, height: h, mask };
+}
+
+function snapToNearestLine(point, lineMap, maxRadiusPx, scale = 1) {
+  const { width: w, height: h, mask } = lineMap;
+  const cx = Math.round(point.x * scale);
+  const cy = Math.round(point.y * scale);
+  const r = Math.max(1, Math.round(maxRadiusPx * scale));
+
+  if (cx >= 0 && cx < w && cy >= 0 && cy < h && mask[cy * w + cx]) {
+    return { x: cx / scale, y: cy / scale };
+  }
+
+  let bestDist2 = Infinity;
+  let bestX = -1;
+  let bestY = -1;
+  let foundShellRadius = -1;
+
+  for (let shell = 1; shell <= r; shell++) {
+    if (foundShellRadius > 0 && shell > foundShellRadius * Math.SQRT2 + 1)
+      break;
+    const x0 = Math.max(0, cx - shell);
+    const x1 = Math.min(w - 1, cx + shell);
+    const y0 = Math.max(0, cy - shell);
+    const y1 = Math.min(h - 1, cy + shell);
+
+    for (const y of [cy - shell, cy + shell]) {
+      if (y < 0 || y >= h) continue;
+      for (let x = x0; x <= x1; x++) {
+        if (mask[y * w + x]) {
+          const d2 = (x - cx) * (x - cx) + (y - cy) * (y - cy);
+          if (d2 < bestDist2) {
+            bestDist2 = d2;
+            bestX = x;
+            bestY = y;
+            if (foundShellRadius < 0) foundShellRadius = shell;
+          }
+        }
+      }
+    }
+    for (const x of [cx - shell, cx + shell]) {
+      if (x < 0 || x >= w) continue;
+      for (let y = y0 + 1; y <= y1 - 1; y++) {
+        if (mask[y * w + x]) {
+          const d2 = (x - cx) * (x - cx) + (y - cy) * (y - cy);
+          if (d2 < bestDist2) {
+            bestDist2 = d2;
+            bestX = x;
+            bestY = y;
+            if (foundShellRadius < 0) foundShellRadius = shell;
+          }
+        }
+      }
+    }
+  }
+
+  if (bestX < 0) return null;
+  return { x: bestX / scale, y: bestY / scale };
+}
+
+test("12. Line snap — klikkaus siirtyy lähimmälle viivapikselille", () => {
+  // Pystyviiva x=500 (täysi korkeus). Vaakaviiva y=300 (täysi leveys).
+  const W = 1000;
+  const H = 600;
+  const lineMap = buildSyntheticLineMap(W, H, [
+    [500, 0, 500, H - 1],
+    [0, 300, W - 1, 300],
+  ]);
+
+  // Klikkaus 2 px sivussa pystyviivasta ja 10 px alaspäin vaakaviivasta:
+  // pystyviiva on selvästi lähempänä → snäppäys pystyviivalle.
+  const click = { x: 502, y: 310 };
+  const snap = snapToNearestLine(click, lineMap, 40);
+
+  console.log(`   ℹ Klikkaus: (${click.x},${click.y})`);
+  console.log(`   ℹ Snap: (${snap?.x},${snap?.y})`);
+  if (!snap) return false;
+
+  // Pystyviivalla x = 500, lähin y = 310 → d=2
+  const ok1 = assertApproxEqual("Snap-x ≈ 500 (pystyviiva)", snap.x, 500, 0.001);
+  const ok2 = assertApproxEqual("Snap-y ≈ 310 (säilyy)", snap.y, 310, 0.001);
+  return ok1 && ok2;
+});
+
+test("13. Line snap — kaukainen klikkaus ei snäppää", () => {
+  const W = 1000;
+  const H = 600;
+  const lineMap = buildSyntheticLineMap(W, H, [
+    [500, 0, 500, H - 1],
+  ]);
+
+  // Klikkaus 100 px sivussa viivasta, snäppäysraja 40 px → ei snäppää.
+  const click = { x: 600, y: 300 };
+  const snap = snapToNearestLine(click, lineMap, 40);
+  console.log(`   ℹ Klikkaus 100 px viivasta, snap = ${snap ? "siirtyi" : "null"}`);
+  return assertTrue("Snap palautti null", snap === null);
+});
+
+test("14. Line snap — eri resoluution viivakartta (scale)", () => {
+  // Viivakartta 500×300 (puolet alkuperäisen 1000×600:sta).
+  const W = 500;
+  const H = 300;
+  const lineMap = buildSyntheticLineMap(W, H, [
+    [250, 0, 250, H - 1], // = x=500 alkuperäisessä koordinaatistossa
+  ]);
+
+  // Käyttäjän klikkaus alkuperäiskoordinaatistossa lähellä viivaa
+  const click = { x: 510, y: 200 };
+  const snap = snapToNearestLine(click, lineMap, 40, W / 1000);
+  console.log(`   ℹ Klikkaus (510,200) alkuperäiskoordinaatistossa → snap (${snap?.x},${snap?.y})`);
+  if (!snap) return false;
+  // Snäppäys siirtää x ≈ 500 (puolet pikseleistä lineMapissa = 250 → /scale = 500)
+  return assertApproxEqual("Snap x ≈ 500 alkuperäiskoordinaatistossa", snap.x, 500, 0.01);
 });
 
 // ────────────────────────────────────────────────────────────────────────────

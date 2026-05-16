@@ -54,6 +54,9 @@ export default function ResultPage() {
   // The customer is instructed to photograph the wall head-on (from the center) so no horizontal
   // perspective correction is applied.
   const [useKeystoneCorrection, setUseKeystoneCorrection] = useState(true);
+  /** M-LSD line map URL — fetched asynchronously when this page loads,
+   *  then passed to PolygonSelect for click-snapping. */
+  const [mlsdMapUrl, setMlsdMapUrl] = useState<string | null>(null);
 
   useEffect(() => {
     const raw = sessionStorage.getItem("facadeSession");
@@ -64,6 +67,29 @@ export default function ResultPage() {
     const s: AnalysisSession = JSON.parse(raw);
     setSession(s);
     setProject(getProject());
+
+    // Kick off the M-LSD line detection in the background. We don't
+    // block the page on it — the snap feature simply lights up once the
+    // result arrives (typically a couple of seconds later, while the
+    // user is still placing their first corner).
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch("/api/lines", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ imageUrl: s.uploadedImageUrl }),
+        });
+        if (!res.ok) return;
+        const { url } = (await res.json()) as { url?: string };
+        if (!cancelled && url) setMlsdMapUrl(url);
+      } catch (err) {
+        if (!cancelled) console.warn("[result] MLSD fetch failed", err);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, [router]);
 
   const handleCalculate = async () => {
@@ -263,6 +289,7 @@ export default function ResultPage() {
                   }}
                   reference={session.reference}
                   autoWallHeightM={session.autoWallHeightM}
+                  mlsdMapUrl={mlsdMapUrl ?? undefined}
                 />
                 {hasPolygon && (
                   <button
