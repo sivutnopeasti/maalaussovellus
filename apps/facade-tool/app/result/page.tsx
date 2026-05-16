@@ -10,6 +10,7 @@ import {
   CheckCircle2,
   ChevronDown,
   ChevronUp,
+  Sparkles,
 } from "lucide-react";
 import PolygonSelect from "@/components/PolygonSelect";
 import QuoteForm from "@/components/QuoteForm";
@@ -17,7 +18,16 @@ import {
   calculatePolygonMeasurement,
   type PreciseMeasurementResult,
 } from "@/lib/measure";
-import type { AnalysisSession, PolygonData } from "@/lib/types";
+import type {
+  AnalysisSession,
+  PolygonData,
+  ReferenceData,
+} from "@/lib/types";
+import {
+  estimateWallHeightM,
+  findReferenceVerticalEdge,
+  storeWallHeight,
+} from "@/lib/wallHeight";
 
 type Panel = "polygon" | "measure" | "quote";
 
@@ -30,6 +40,9 @@ export default function ResultPage() {
   const [isMeasuring, setIsMeasuring] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [lastStoredWallHeightM, setLastStoredWallHeightM] = useState<
+    number | null
+  >(null);
   // Keystone (vertical) correction uses the vanishing point or sensor tilt — reliable for tilted photos.
   // The customer is instructed to photograph the wall head-on (from the center) so no horizontal
   // perspective correction is applied.
@@ -53,12 +66,37 @@ export default function ResultPage() {
     setIsMeasuring(true);
     setError(null);
     try {
+      // In auto-mode (no manual reference), derive a reference line from the
+      // longest near-vertical edge of the polygon and the previously stored
+      // wall corner height.
+      let activeReference: ReferenceData = session.reference;
+      if (
+        session.autoWallHeightM &&
+        (session.reference.pixelsPerMeter === 0 ||
+          session.reference.meters === 0)
+      ) {
+        const edge = findReferenceVerticalEdge(activePolygon.points);
+        if (!edge) {
+          throw new Error(
+            "Polygonissa ei ole pystysuoria reunoja, joista skaalaus voitaisiin johtaa. Piirrä polygoni uudelleen niin että talon nurkat ovat mukana, tai aseta referenssimitta manuaalisesti.",
+          );
+        }
+        activeReference = {
+          point1: edge.p1,
+          point2: edge.p2,
+          meters: session.autoWallHeightM,
+          pixelDistance: edge.pixelLength,
+          pixelsPerMeter: edge.pixelLength / session.autoWallHeightM,
+          angleDeg: 90,
+        };
+      }
+
       const result = await calculatePolygonMeasurement(
         activePolygon.points,
         [],
         session.imageWidth,
         session.imageHeight,
-        session.reference,
+        activeReference,
         {
           mlsdMapUrl: session.mlsdMapUrl,
           useKeystoneCorrection,
@@ -67,6 +105,17 @@ export default function ResultPage() {
       );
       setMeasurement(result);
       setOpenPanel("quote");
+
+      // Save the wall corner height (median of polygon's vertical edges) for
+      // reuse on subsequent photos of the same house.
+      const wallHeightM = estimateWallHeightM(
+        activePolygon.points,
+        activeReference.pixelsPerMeter,
+      );
+      if (wallHeightM !== null && wallHeightM > 1 && wallHeightM < 25) {
+        storeWallHeight(wallHeightM);
+        setLastStoredWallHeightM(wallHeightM);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Laskenta epäonnistui.");
     } finally {
@@ -265,11 +314,40 @@ export default function ResultPage() {
                   )}
 
                   {/* Reference info */}
-                  <div className="p-3 bg-slate-50 rounded-xl text-xs text-slate-600">
-                    <strong>Referenssi:</strong> {session.reference.meters} m
-                    = {session.reference.pixelDistance.toFixed(0)} px (
-                    {session.reference.pixelsPerMeter.toFixed(1)} px/m)
-                  </div>
+                  {session.autoWallHeightM ? (
+                    <div className="p-3 bg-indigo-50 border border-indigo-200 rounded-xl text-xs text-indigo-700 flex items-start gap-2">
+                      <Sparkles className="w-4 h-4 shrink-0 mt-0.5" />
+                      <span>
+                        <strong>Automaattinen referenssi:</strong>{" "}
+                        nurkkakorkeus{" "}
+                        <strong>{session.autoWallHeightM.toFixed(2)} m</strong>{" "}
+                        tallennettiin aiemmasta mittauksesta. Skaalaus
+                        johdetaan polygonin pisimmästä pystyreunasta laskennan
+                        yhteydessä.
+                      </span>
+                    </div>
+                  ) : (
+                    <div className="p-3 bg-slate-50 rounded-xl text-xs text-slate-600">
+                      <strong>Referenssi:</strong> {session.reference.meters} m
+                      = {session.reference.pixelDistance.toFixed(0)} px (
+                      {session.reference.pixelsPerMeter.toFixed(1)} px/m)
+                    </div>
+                  )}
+
+                  {/* Saved wall height notification after measurement */}
+                  {lastStoredWallHeightM !== null && (
+                    <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-xl text-xs text-emerald-800 flex items-start gap-2">
+                      <Sparkles className="w-4 h-4 shrink-0 mt-0.5" />
+                      <span>
+                        <strong>
+                          Nurkkakorkeus {lastStoredWallHeightM.toFixed(2)} m
+                          tallennettiin.
+                        </strong>{" "}
+                        Voit seuraavalle kuvalle ohittaa referenssimittauksen
+                        — sovellus käyttää tätä automaattisesti.
+                      </span>
+                    </div>
+                  )}
 
                   {/* Capture tilt badge (if photo was taken with in-app camera) */}
                   {session.captureTilt && (

@@ -58,6 +58,13 @@ export interface AnalysisSession {
   mlsdMapUrl: string | null;
   /** Phone orientation at capture time, when in-app camera was used. */
   captureTilt?: CaptureTilt;
+  /**
+   * Known wall corner height (m) from a previous photo of the same house.
+   * When set, the result page derives a scale automatically from the
+   * polygon's vertical edges instead of using the manual `reference` line.
+   * `reference` in this case is a placeholder (pixelsPerMeter = 0).
+   */
+  autoWallHeightM?: number;
 }
 
 export interface MeasurementResult {
