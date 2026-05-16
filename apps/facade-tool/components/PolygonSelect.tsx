@@ -46,7 +46,9 @@ export default function PolygonSelect({
   mlsdMapUrl,
 }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const debugCanvasRef = useRef<HTMLCanvasElement>(null);
   const imageRef = useRef<HTMLImageElement | null>(null);
+  const mlsdImageRef = useRef<HTMLImageElement | null>(null);
   const lineMapRef = useRef<LineMapData | null>(null);
   const [lineMapReady, setLineMapReady] = useState(false);
   const [snapEnabled, setSnapEnabled] = useState(true);
@@ -74,7 +76,8 @@ export default function PolygonSelect({
 
   // Load and decode the M-LSD line map for click snapping. We do this
   // off-screen as soon as the URL is available — typically before the
-  // user has finished placing their first point.
+  // user has finished placing their first point. The decoded HTMLImage
+  // is also kept so the debug-canvas below can render it.
   useEffect(() => {
     if (!mlsdMapUrl) return;
     let cancelled = false;
@@ -84,6 +87,7 @@ export default function PolygonSelect({
       if (cancelled) return;
       try {
         lineMapRef.current = buildLineMap(img);
+        mlsdImageRef.current = img;
         setLineMapReady(true);
       } catch (err) {
         console.warn("[PolygonSelect] failed to decode MLSD map", err);
@@ -128,13 +132,11 @@ export default function PolygonSelect({
     [effectivePpm],
   );
 
-  const redraw = useCallback(() => {
-    const canvas = canvasRef.current;
-    const img = imageRef.current;
-    if (!canvas || !img || canvasSize.w === 0) return;
-    const ctx = canvas.getContext("2d")!;
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+  /** Pure draw function — draws polygon points, edges and labels onto
+   *  whatever canvas is supplied. Used by both the main canvas (over
+   *  the source photo) and the debug canvas (over the MLSD line map). */
+  const drawOverlay = useCallback(
+    (ctx: CanvasRenderingContext2D, canvas: HTMLCanvasElement) => {
     if (points.length === 0) return;
 
     const sx = (p: Point) => p.x * scale;
@@ -232,11 +234,37 @@ export default function PolygonSelect({
       ctx.stroke();
       ctx.restore();
     }
-  }, [points, canvasSize, scale, phase, effectivePpm, getSegmentLength, snapHint]);
+  }, [points, scale, phase, effectivePpm, getSegmentLength, snapHint]);
+
+  const redraw = useCallback(() => {
+    const canvas = canvasRef.current;
+    const img = imageRef.current;
+    if (!canvas || !img || canvasSize.w === 0) return;
+    const ctx = canvas.getContext("2d")!;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+    drawOverlay(ctx, canvas);
+  }, [canvasSize, drawOverlay]);
+
+  /** Debug canvas — same dimensions as the main one, but the M-LSD line
+   *  raster underneath instead of the source photo. Lets the user check
+   *  visually whether the polygon edges they're drawing land on detected
+   *  building lines. Temporary feature. */
+  const redrawDebug = useCallback(() => {
+    const canvas = debugCanvasRef.current;
+    const mlsd = mlsdImageRef.current;
+    if (!canvas || !mlsd || canvasSize.w === 0) return;
+    const ctx = canvas.getContext("2d")!;
+    ctx.fillStyle = "#000";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(mlsd, 0, 0, canvas.width, canvas.height);
+    drawOverlay(ctx, canvas);
+  }, [canvasSize, drawOverlay]);
 
   useEffect(() => {
     redraw();
-  }, [redraw]);
+    redrawDebug();
+  }, [redraw, redrawDebug, lineMapReady]);
 
   const handleCanvasClick = useCallback(
     (e: React.MouseEvent<HTMLCanvasElement>) => {
@@ -362,6 +390,30 @@ export default function PolygonSelect({
           className={`block w-full ${phase === "drawing" ? "cursor-crosshair" : "cursor-default"}`}
         />
       </div>
+
+      {/* TEMPORARY DEBUG: MLSD line-map view with the same polygon
+          points and edges drawn on top, so we can verify by eye that
+          clicks land on detected building edges. */}
+      {mlsdMapUrl && lineMapReady && (
+        <div className="space-y-1.5">
+          <div className="flex items-center justify-between text-xs">
+            <span className="font-semibold text-cyan-700">
+              MLSD-viivakartta (debug)
+            </span>
+            <span className="text-slate-400">
+              Tunnistetut rakennusreunat + sama polygoni päällä
+            </span>
+          </div>
+          <div className="relative rounded-xl overflow-hidden border-2 border-cyan-300 bg-black">
+            <canvas
+              ref={debugCanvasRef}
+              width={canvasSize.w}
+              height={canvasSize.h}
+              className="block w-full"
+            />
+          </div>
+        </div>
+      )}
 
       <div className="flex flex-wrap gap-2">
         {phase === "drawing" && points.length >= 3 && (

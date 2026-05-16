@@ -35,6 +35,17 @@ const CameraCapture = dynamic(() => import("@/components/CameraCapture"), {
 
 type Step = "capture" | "reference" | "analysing";
 
+/**
+ * TEMPORARY DEBUG FLAG.
+ *
+ * When `true`, every photo asks for a manual reference line — including
+ * the 2nd / 3rd wall — even if a stored wall-corner height exists. This
+ * is on right now so we can verify the MLSD line-snap quality against
+ * an independent manual reference. Flip back to `false` to restore the
+ * auto-reference workflow.
+ */
+const FORCE_MANUAL_REFERENCE = true;
+
 /** Placeholder used when the user picks auto-mode: the real reference is
  *  computed on the result page from the polygon's vertical edges. */
 const PLACEHOLDER_REFERENCE: ReferenceData = {
@@ -75,9 +86,13 @@ export default function HomePage() {
     // short intro the first time so the user knows what's happening.
     if (wh && !cameraAutoOpenedRef.current) {
       cameraAutoOpenedRef.current = true;
-      // Auto-enter auto-mode for subsequent measurements
-      setAutoMode(true);
-      setReference(PLACEHOLDER_REFERENCE);
+      // Auto-enter auto-mode for subsequent measurements — UNLESS the
+      // temporary FORCE_MANUAL_REFERENCE flag is on, in which case we
+      // always go through the manual reference step for verification.
+      if (!FORCE_MANUAL_REFERENCE) {
+        setAutoMode(true);
+        setReference(PLACEHOLDER_REFERENCE);
+      }
       setCameraOpen(true);
       setIntroShown(true);
     } else if (!wh) {
@@ -160,7 +175,7 @@ export default function HomePage() {
       const dims = { w: img.width, h: img.height };
       setImageDimensions(dims);
 
-      if (wh && wh.valueM > 0) {
+      if (!FORCE_MANUAL_REFERENCE && wh && wh.valueM > 0) {
         // Auto-mode: known wall corner height → skip the manual reference
         // line step and analyse straight away.
         setReference(PLACEHOLDER_REFERENCE);
