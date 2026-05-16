@@ -274,6 +274,58 @@ export default function ResultPage() {
                 )}
               </AccordionPanel>
 
+              {/* Big CTA right after the image / polygon — only after a measurement */}
+              {measurement && project && (
+                <div className="bg-gradient-to-br from-emerald-50 to-blue-50 border-2 border-emerald-200 rounded-2xl p-4 space-y-3 shadow-md">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-bold text-emerald-800 uppercase tracking-wide">
+                      Tämä seinä mitattu
+                    </span>
+                    <span className="text-2xl font-bold text-emerald-700 font-mono">
+                      {measurement.wallAreaM2.toFixed(2)} m²
+                    </span>
+                  </div>
+
+                  {project.measurements.length > 0 && (
+                    <div className="text-sm space-y-0.5 border-t border-emerald-200 pt-2">
+                      {project.measurements.map((m, idx) => (
+                        <div
+                          key={idx}
+                          className="flex items-center justify-between text-slate-600"
+                        >
+                          <span className="flex items-center gap-1.5">
+                            <CheckCircle2 className="w-3.5 h-3.5 text-green-600" />
+                            {m.label}
+                          </span>
+                          <span className="font-mono text-slate-500">
+                            {m.areaM2.toFixed(2)} m²
+                          </span>
+                        </div>
+                      ))}
+                      <div className="flex items-center justify-between font-bold text-slate-900 border-t border-emerald-200 pt-1.5 mt-1">
+                        <span>Yhteensä</span>
+                        <span className="font-mono text-lg">
+                          {projectTotal.toFixed(2)} m²
+                        </span>
+                      </div>
+                    </div>
+                  )}
+
+                  <button
+                    onClick={handleNextWall}
+                    className="w-full flex items-center justify-center gap-2 py-3.5 bg-gradient-to-br from-emerald-500 to-emerald-600 hover:from-emerald-600 hover:to-emerald-700 text-white rounded-xl text-base font-bold shadow-lg shadow-emerald-200 transition-colors"
+                  >
+                    <Camera className="w-5 h-5" />
+                    Mittaa seuraava seinä
+                    <Plus className="w-4 h-4" />
+                  </button>
+                  <p className="text-xs text-slate-500 text-center">
+                    Kamera aukeaa heti — sovellus käyttää automaattisesti
+                    tallennettua nurkkakorkeutta.
+                  </p>
+                </div>
+              )}
+
               {/* Panel 2 — Measure */}
               <AccordionPanel
                 icon={<Calculator />}
@@ -422,50 +474,6 @@ export default function ResultPage() {
                     )}
                     {isMeasuring ? "Lasketaan..." : "Laske neliömetrit"}
                   </button>
-
-                  {/* Project progress + next wall */}
-                  {measurement && project && (
-                    <div className="space-y-3 pt-2">
-                      <div className="p-3 bg-blue-50 border border-blue-200 rounded-xl space-y-1.5">
-                        <p className="text-xs font-semibold text-blue-800 uppercase tracking-wide">
-                          Tämä projekti
-                        </p>
-                        {project.measurements.map((m, idx) => (
-                          <div
-                            key={idx}
-                            className="flex items-center justify-between text-sm text-blue-700"
-                          >
-                            <span>
-                              <CheckCircle2 className="w-3.5 h-3.5 inline mr-1.5 text-green-600" />
-                              {m.label}
-                            </span>
-                            <span className="font-mono">
-                              {m.areaM2.toFixed(2)} m²
-                            </span>
-                          </div>
-                        ))}
-                        <div className="flex items-center justify-between text-base font-bold text-blue-900 border-t border-blue-200 pt-1.5">
-                          <span>Kokonaisala</span>
-                          <span className="font-mono">
-                            {projectTotal.toFixed(2)} m²
-                          </span>
-                        </div>
-                      </div>
-
-                      <button
-                        onClick={handleNextWall}
-                        className="w-full flex items-center justify-center gap-2 py-3.5 bg-gradient-to-br from-emerald-500 to-emerald-600 hover:from-emerald-600 hover:to-emerald-700 text-white rounded-xl text-base font-semibold shadow-lg shadow-emerald-200/60 transition-colors"
-                      >
-                        <Camera className="w-5 h-5" />
-                        Mittaa seuraava seinä
-                        <Plus className="w-4 h-4" />
-                      </button>
-                      <p className="text-xs text-slate-500 text-center">
-                        Sovellus käyttää automaattisesti tallennettua
-                        nurkkakorkeutta — ei tarvita uutta referenssiä.
-                      </p>
-                    </div>
-                  )}
                 </div>
               </AccordionPanel>
 

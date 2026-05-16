@@ -101,6 +101,44 @@ export default function HomePage() {
   const cameraTitle =
     wallCount === 0 ? "Seinä 1 — pääty" : `Seinä ${wallIndex}`;
 
+  const runAnalysis = async (
+    file: File,
+    dimensions: { w: number; h: number },
+    ref: ReferenceData,
+    tilt: CaptureTilt | null,
+  ) => {
+    setStep("analysing");
+    setError(null);
+
+    try {
+      const uploadForm = new FormData();
+      uploadForm.append("file", file);
+      const uploadRes = await fetch("/api/upload", {
+        method: "POST",
+        body: uploadForm,
+      });
+      if (!uploadRes.ok) throw new Error("Kuvan lataaminen epäonnistui.");
+      const { url: uploadedImageUrl } = await uploadRes.json();
+
+      const session: AnalysisSession = {
+        uploadedImageUrl,
+        imageWidth: dimensions.w,
+        imageHeight: dimensions.h,
+        reference: ref,
+        captureTilt: tilt ?? undefined,
+        autoWallHeightM:
+          autoMode && storedWallHeight ? storedWallHeight.valueM : undefined,
+      };
+
+      sessionStorage.setItem("facadeSession", JSON.stringify(session));
+      router.push("/result");
+    } catch (err) {
+      console.error(err);
+      setError(err instanceof Error ? err.message : "Tuntematon virhe.");
+      setStep(autoMode ? "capture" : "reference");
+    }
+  };
+
   const handleCameraCapture = (
     file: File,
     dataUrl: string,
@@ -109,12 +147,24 @@ export default function HomePage() {
     setCameraOpen(false);
     setImageFile(file);
     setImageDataUrl(dataUrl);
-    setReference(autoMode ? PLACEHOLDER_REFERENCE : null);
     setCaptureTilt(tilt);
+
     const img = new Image();
-    img.onload = () => setImageDimensions({ w: img.width, h: img.height });
+    img.onload = () => {
+      const dims = { w: img.width, h: img.height };
+      setImageDimensions(dims);
+
+      // Auto-mode: known wall corner height → skip the manual reference
+      // line step and analyse straight away.
+      if (autoMode && storedWallHeight) {
+        setReference(PLACEHOLDER_REFERENCE);
+        void runAnalysis(file, dims, PLACEHOLDER_REFERENCE, tilt);
+      } else {
+        setReference(null);
+        setStep("reference");
+      }
+    };
     img.src = dataUrl;
-    setStep("reference");
   };
 
   const handleReferenceSet = (data: ReferenceData) => {
@@ -133,38 +183,9 @@ export default function HomePage() {
     setStep("capture");
   };
 
-  const handleAnalyse = async () => {
+  const handleAnalyse = () => {
     if (!imageFile || !reference) return;
-    setStep("analysing");
-    setError(null);
-
-    try {
-      const uploadForm = new FormData();
-      uploadForm.append("file", imageFile);
-      const uploadRes = await fetch("/api/upload", {
-        method: "POST",
-        body: uploadForm,
-      });
-      if (!uploadRes.ok) throw new Error("Kuvan lataaminen epäonnistui.");
-      const { url: uploadedImageUrl } = await uploadRes.json();
-
-      const session: AnalysisSession = {
-        uploadedImageUrl,
-        imageWidth: imageDimensions.w,
-        imageHeight: imageDimensions.h,
-        reference,
-        captureTilt: captureTilt ?? undefined,
-        autoWallHeightM:
-          autoMode && storedWallHeight ? storedWallHeight.valueM : undefined,
-      };
-
-      sessionStorage.setItem("facadeSession", JSON.stringify(session));
-      router.push("/result");
-    } catch (err) {
-      console.error(err);
-      setError(err instanceof Error ? err.message : "Tuntematon virhe.");
-      setStep("reference");
-    }
+    void runAnalysis(imageFile, imageDimensions, reference, captureTilt);
   };
 
   const STEPS = [
