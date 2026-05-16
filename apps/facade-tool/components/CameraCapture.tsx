@@ -37,39 +37,54 @@ export default function CameraCapture({ onCapture, onClose }: Props) {
   const [orientationPermission, setOrientationPermission] =
     useState<"unknown" | "granted" | "denied" | "unsupported">("unknown");
 
-  // Start camera on mount
+  // Start camera on mount.
+  // Important: getUserMedia is requested only ONCE here. The stream is stored
+  // in a ref; attaching it to <video> is handled by a separate effect below
+  // because the <video> element is mounted conditionally (after `starting` is
+  // set to false).
   useEffect(() => {
     let cancelled = false;
     const start = async () => {
       try {
         if (!navigator.mediaDevices?.getUserMedia) {
-          setError("Selaimesi ei tue kameraa.");
+          setError("Selaimesi ei tue kameraa. Käytä uutta selainta (Safari/Chrome).");
           setStarting(false);
           return;
         }
-        const s = await navigator.mediaDevices.getUserMedia({
-          video: {
-            facingMode: { ideal: "environment" },
-            width: { ideal: 1920 },
-            height: { ideal: 1080 },
-          },
-          audio: false,
-        });
+        // First try the rear camera with HD resolution
+        let s: MediaStream;
+        try {
+          s = await navigator.mediaDevices.getUserMedia({
+            video: {
+              facingMode: { ideal: "environment" },
+              width: { ideal: 1920 },
+              height: { ideal: 1080 },
+            },
+            audio: false,
+          });
+        } catch {
+          // Fallback: any camera, any resolution (laptop without rear cam, etc.)
+          s = await navigator.mediaDevices.getUserMedia({
+            video: true,
+            audio: false,
+          });
+        }
         if (cancelled) {
           s.getTracks().forEach((t) => t.stop());
           return;
         }
         streamRef.current = s;
-        if (videoRef.current) {
-          videoRef.current.srcObject = s;
-        }
         setStarting(false);
       } catch (err) {
-        setError(
+        const msg =
           err instanceof Error
-            ? `Kameraa ei voitu avata: ${err.message}`
-            : "Kameraa ei voitu avata.",
-        );
+            ? err.name === "NotAllowedError"
+              ? "Kameran käyttö estetty. Salli kameraoikeudet selaimen asetuksista."
+              : err.name === "NotFoundError"
+                ? "Kameraa ei löytynyt tästä laitteesta."
+                : `Kameraa ei voitu avata: ${err.message}`
+            : "Kameraa ei voitu avata.";
+        setError(msg);
         setStarting(false);
       }
     };
@@ -80,6 +95,18 @@ export default function CameraCapture({ onCapture, onClose }: Props) {
       streamRef.current = null;
     };
   }, []);
+
+  // Attach stream to <video> once both the element and the stream exist.
+  // This runs after starting flips to false (= <video> mounts).
+  useEffect(() => {
+    if (!starting && streamRef.current && videoRef.current) {
+      videoRef.current.srcObject = streamRef.current;
+      // Force play — some browsers require it explicitly after assigning srcObject
+      videoRef.current.play().catch((err) => {
+        console.warn("video.play() failed:", err);
+      });
+    }
+  }, [starting]);
 
   // Listen for device orientation
   const startOrientation = useCallback(async () => {
