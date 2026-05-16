@@ -9,12 +9,15 @@ import type { MaskResult } from "@/lib/types";
 
 export const maxDuration = 120;
 
-// Primary: fine-tuned for real-world conditions (shadows, vegetation, variable lighting)
-// Fallback: classic CMP Facade Database model, 3.7M downloads, well-tested
+// Model priority:
+// 1. Xpitfire — facade-specific (CMP, 12 classes), confirmed Inference API support
+// 2. nvidia ADE20K — general scene model, well-deployed, includes wall/window/door
 const HF_MODELS = [
   "Xpitfire/segformer-finetuned-segments-cmp-facade",
-  "Marco333/segformer-b0-facade-cmp",
+  "nvidia/segformer-b0-finetuned-ade-512-512",
 ];
+// Use new HuggingFace router URL (2024+) — old api-inference.huggingface.co gives 404
+const HF_BASE_URL = "https://router.huggingface.co/hf-inference/models";
 const WALL_CLASSES = ["facade", "wall"];
 const OPENING_CLASSES = ["window", "door"];
 
@@ -51,7 +54,7 @@ async function runHuggingFaceFacade(imageUrl: string): Promise<{
     for (const model of HF_MODELS) {
       try {
         const hfRes = await fetch(
-          `https://api-inference.huggingface.co/models/${model}`,
+          `${HF_BASE_URL}/${model}`,
           {
             method: "POST",
             headers: { ...baseHeaders },
