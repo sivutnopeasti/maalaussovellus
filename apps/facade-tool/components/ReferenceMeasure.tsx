@@ -139,9 +139,13 @@ export default function ReferenceMeasure({ imageDataUrl, onReferenceSet }: Props
           <Ruler className="w-4 h-4 text-blue-600 mt-0.5 shrink-0" />
           {phase === "idle" && (
             <span>
-              Piirrä viiva pitkin jotain <strong>tunnetun mittaista vaakasuoraa</strong>{" "}
-              rakennetta — esim. ulko-oven leveys (n. 0,9 m), alin lauta, tai sokkelin leveys.
-              Viiva antaa mittakaavan koko kuvalle.
+              Piirrä viiva pitkin jotain <strong>tunnetun mittaista</strong> rakennetta —
+              esim. ulko-oven leveys (0,9 m) tai korkeus (2,0 m), sokkelin yläreuna,
+              ikkuna. Viiva antaa mittakaavan koko kuvalle.
+              <span className="block mt-1 text-xs text-slate-500">
+                Tarkin tulos saadaan <strong>vaakasuoralla</strong> viivalla (esim. sokkelin reuna).
+                Pystysuora viiva toimii myös, jos kuva on otettu suoraan edestä.
+              </span>
             </span>
           )}
           {phase === "point1" && (
