@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   ArrowLeft,
@@ -11,21 +11,19 @@ import {
   ChevronDown,
   ChevronUp,
 } from "lucide-react";
-import SegmentationOverlay from "@/components/SegmentationOverlay";
 import PolygonSelect from "@/components/PolygonSelect";
 import QuoteForm from "@/components/QuoteForm";
 import {
   calculatePolygonMeasurement,
   type PreciseMeasurementResult,
 } from "@/lib/measure";
-import type { AnalysisSession, MaskResult, PolygonData } from "@/lib/types";
+import type { AnalysisSession, PolygonData } from "@/lib/types";
 
 type Panel = "polygon" | "measure" | "quote";
 
 export default function ResultPage() {
   const router = useRouter();
   const [session, setSession] = useState<AnalysisSession | null>(null);
-  const [masks, setMasks] = useState<MaskResult[]>([]);
   const [measurement, setMeasurement] = useState<PreciseMeasurementResult | null>(null);
   const [polygon, setPolygon] = useState<PolygonData | null>(null);
   const [openPanel, setOpenPanel] = useState<Panel>("polygon");
@@ -45,12 +43,7 @@ export default function ResultPage() {
     }
     const s: AnalysisSession = JSON.parse(raw);
     setSession(s);
-    setMasks(s.masks);
   }, [router]);
-
-  const handleMasksUpdated = useCallback((updated: MaskResult[]) => {
-    setMasks(updated);
-  }, []);
 
   const handleCalculate = async () => {
     if (!session) return;
@@ -62,7 +55,7 @@ export default function ResultPage() {
     try {
       const result = await calculatePolygonMeasurement(
         activePolygon.points,
-        masks,
+        [],
         session.imageWidth,
         session.imageHeight,
         session.reference,
@@ -126,7 +119,6 @@ export default function ResultPage() {
 
   const activePolygon = polygon ?? session?.polygon;
   const hasPolygon = !!(activePolygon && activePolygon.points.length >= 3);
-  const openingCount = masks.filter((m) => m.category === "opening").length;
 
   return (
     <div className="min-h-screen flex flex-col">
@@ -142,7 +134,7 @@ export default function ResultPage() {
           <div className="flex-1">
             <h1 className="font-bold text-slate-900">Analyysitulokset</h1>
             <p className="text-xs text-slate-500">
-              {openingCount} aukkoa tunnistettu
+              Rajaa julkisivu ja laske neliömetrit
             </p>
           </div>
           {measurement && (
@@ -150,7 +142,7 @@ export default function ResultPage() {
               <span className="font-bold text-blue-700">
                 {measurement.wallAreaM2.toFixed(1)} m²
               </span>
-              <span className="text-blue-500 ml-1">nettoseinäala</span>
+              <span className="text-blue-500 ml-1">seinäala</span>
             </div>
           )}
         </div>
@@ -170,27 +162,8 @@ export default function ResultPage() {
           )}
 
           <div className="grid grid-cols-1 lg:grid-cols-5 gap-6">
-            {/* Left — image with overlay + analysis maps */}
+            {/* Left — analysis maps */}
             <div className="lg:col-span-3 space-y-4">
-              <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden shadow-sm">
-                <div className="px-4 py-3 border-b border-slate-100 flex items-center justify-between">
-                  <span className="text-sm font-medium text-slate-700">Tunnistetut alueet</span>
-                  <span className="text-xs text-slate-400">
-                    {session.imageWidth} × {session.imageHeight} px
-                  </span>
-                </div>
-                <div className="p-2">
-                  <SegmentationOverlay
-                    masks={masks}
-                    originalImageUrl={session.uploadedImageUrl}
-                    imageWidth={session.imageWidth}
-                    imageHeight={session.imageHeight}
-                    onMasksUpdated={handleMasksUpdated}
-                    polygonPoints={activePolygon?.points}
-                  />
-                </div>
-              </div>
-
               {/* Analysis maps — depth + MLSD */}
               {(session.depthMapUrl || session.mlsdMapUrl) && (
                 <div className="bg-white rounded-2xl border border-indigo-200 overflow-hidden shadow-sm">
@@ -286,7 +259,7 @@ export default function ResultPage() {
                       <span>
                         <strong>Monikulmio-mittaus:</strong>{" "}
                         {activePolygon!.points.length} pistettä.
-                        Ikkunat ja ovet ({openingCount} kpl) vähennetään automaattisesti.
+                        Pinta-ala lasketaan rajatun monikulmion mukaan.
                       </span>
                     </div>
                   )}
@@ -339,12 +312,8 @@ export default function ResultPage() {
                         <span>Julkisivualue</span>
                         <span>{(measurement.wallPixels / 1000).toFixed(0)} kpx</span>
                       </div>
-                      <div className="flex justify-between text-red-600">
-                        <span>Aukot (vähennetty)</span>
-                        <span>−{(measurement.openingPixels / 1000).toFixed(0)} kpx</span>
-                      </div>
                       <div className="flex justify-between font-bold text-green-800 border-t border-green-200 pt-1">
-                        <span>Nettoseinäala</span>
+                        <span>Seinäala</span>
                         <span>{measurement.wallAreaM2.toFixed(2)} m²</span>
                       </div>
                       <div className="border-t border-green-200 pt-1 space-y-0.5 text-xs text-slate-500">

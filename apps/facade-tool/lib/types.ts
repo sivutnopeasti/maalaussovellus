@@ -46,19 +46,15 @@ export interface CaptureTilt {
 }
 
 export interface AnalysisSession {
-  /** Facade outline polygon — when present, used instead of SAM wall masks for area. */
+  /** Facade outline polygon — the customer draws this manually. */
   polygon?: PolygonData;
-  /** SAM 3 wall mask URL — used for automatic corner detection on the result page. */
-  wallMaskUrl?: string | null;
   /** URL in fal.ai storage — passed to AI models and used for display */
   uploadedImageUrl: string;
   imageWidth: number;
   imageHeight: number;
   reference: ReferenceData;
-  /** SAM 3 opening masks (windows, doors) — subtracted from polygon area */
-  masks: MaskResult[];
   depthMapUrl: string;
-  /** MLSD line map — used for dominant line angle / foreshortening correction */
+  /** MLSD line map — used for vertical vanishing-point keystone correction */
   mlsdMapUrl: string | null;
   /** Phone orientation at capture time, when in-app camera was used. */
   captureTilt?: CaptureTilt;

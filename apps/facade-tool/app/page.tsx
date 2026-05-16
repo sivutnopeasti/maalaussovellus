@@ -8,7 +8,6 @@ import ReferenceMeasure from "@/components/ReferenceMeasure";
 import type {
   ReferenceData,
   AnalysisSession,
-  MaskResult,
   CaptureTilt,
 } from "@/lib/types";
 
@@ -59,33 +58,20 @@ export default function HomePage() {
       if (!uploadRes.ok) throw new Error("Kuvan lataaminen epäonnistui.");
       const { url: uploadedImageUrl } = await uploadRes.json();
 
-      // 2. Run segmentation and depth estimation in parallel
-      const [segRes, depthRes] = await Promise.all([
-        fetch("/api/segment", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ imageUrl: uploadedImageUrl }),
-        }),
-        fetch("/api/depth", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ imageUrl: uploadedImageUrl }),
-        }),
-      ]);
+      // 2. Run depth estimation (provides MLSD for keystone correction).
+      //    Opening (window/door) detection has been disabled — measurements
+      //    are based purely on the user-drawn polygon.
+      const depthRes = await fetch("/api/depth", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ imageUrl: uploadedImageUrl }),
+      });
 
-      if (!segRes.ok) {
-        const e = await segRes.json().catch(() => ({}));
-        throw new Error(e.error ?? "Segmentointi epäonnistui.");
-      }
       if (!depthRes.ok) {
         const e = await depthRes.json().catch(() => ({}));
         throw new Error(e.error ?? "Syvyyskartan luominen epäonnistui.");
       }
 
-      const segData: {
-        masks: MaskResult[];
-        wallMaskUrl?: string | null;
-      } = await segRes.json();
       const {
         depthMapUrl,
         mlsdMapUrl,
@@ -97,8 +83,6 @@ export default function HomePage() {
         imageWidth: imageDimensions.w,
         imageHeight: imageDimensions.h,
         reference,
-        masks: segData.masks,
-        wallMaskUrl: segData.wallMaskUrl ?? null,
         depthMapUrl,
         mlsdMapUrl,
         captureTilt: captureTilt ?? undefined,
@@ -275,10 +259,10 @@ export default function HomePage() {
                 <Loader2 className="w-8 h-8 text-blue-600 animate-spin" />
               </div>
               <div className="text-center space-y-1">
-                <p className="font-semibold text-slate-800">Analysoidaan julkisivua...</p>
+                <p className="font-semibold text-slate-800">Analysoidaan kuvaa...</p>
                 <p className="text-sm text-slate-500">
-                  Tekoäly tunnistaa seinät, ikkunat ja ovet sekä luo syvyyskartan.
-                  Tämä kestää noin 20–60 sekuntia.
+                  Lasketaan syvyyskartta ja viivat perspektiivin korjaukseen.
+                  Tämä kestää noin 15–30 sekuntia.
                 </p>
               </div>
               <div className="w-full max-w-xs bg-slate-100 rounded-full h-1.5 overflow-hidden">
