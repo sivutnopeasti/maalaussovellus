@@ -294,6 +294,7 @@ export default function ResultPage() {
                     setOpenPanel("measure");
                   }}
                   reference={session.reference}
+                  autoWallHeightM={session.autoWallHeightM}
                 />
                 {hasPolygon && (
                   <button

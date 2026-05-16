@@ -1,8 +1,9 @@
 "use client";
 
-import { useRef, useEffect, useState, useCallback } from "react";
+import { useRef, useEffect, useState, useCallback, useMemo } from "react";
 import { Hexagon, RotateCcw, Check, Undo2 } from "lucide-react";
 import type { Point, PolygonData, ReferenceData } from "@/lib/types";
+import { findReferenceVerticalEdge } from "@/lib/wallHeight";
 
 interface Props {
   imageUrl: string;
@@ -10,6 +11,14 @@ interface Props {
   imageHeight: number;
   onPolygonSet: (data: PolygonData) => void;
   reference?: ReferenceData;
+  /**
+   * When set, the polygon's longest near-vertical edge is treated as a wall
+   * corner of this real-world height (m). The scale (px/m) is derived live
+   * from that edge, so all segment lengths are labelled in metres exactly
+   * like in the first photo. Used when subsequent photos auto-reference
+   * against a previously measured corner height.
+   */
+  autoWallHeightM?: number;
 }
 
 type Phase = "drawing" | "done";
@@ -20,6 +29,7 @@ export default function PolygonSelect({
   imageHeight,
   onPolygonSet,
   reference,
+  autoWallHeightM,
 }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const imageRef = useRef<HTMLImageElement | null>(null);
@@ -42,18 +52,34 @@ export default function PolygonSelect({
     img.src = imageUrl;
   }, [imageUrl]);
 
-  // Segment length = raw pixel distance / pixelsPerMeter.
-  // Photos are taken head-on (perpendicular to the wall) so no perspective
-  // correction is needed for individual line segments.
+  // Effective pixels-per-meter for the segment labels. Two sources:
+  //  1) Manual reference (`reference.pixelsPerMeter`) — used in photo 1.
+  //  2) Auto reference (`autoWallHeightM`) — used in subsequent photos. The
+  //     scale is derived from the polygon's longest near-vertical edge,
+  //     since on every face of the same house the wall corner has the same
+  //     real-world height.
+  //
+  // The auto-derived scale only becomes available once the polygon has at
+  // least one vertical edge (typically after the user has clicked the first
+  // two corner points). Before that, no labels are shown.
+  const effectivePpm = useMemo<number | null>(() => {
+    if (reference && reference.pixelsPerMeter > 0) return reference.pixelsPerMeter;
+    if (autoWallHeightM && autoWallHeightM > 0 && points.length >= 2) {
+      const edge = findReferenceVerticalEdge(points);
+      if (edge) return edge.pixelLength / autoWallHeightM;
+    }
+    return null;
+  }, [reference, autoWallHeightM, points]);
+
   const getSegmentLength = useCallback(
     (a: Point, b: Point): number | null => {
-      if (!reference || reference.pixelsPerMeter <= 0) return null;
+      if (effectivePpm === null) return null;
       const dx = b.x - a.x;
       const dy = b.y - a.y;
       const pixLen = Math.sqrt(dx * dx + dy * dy);
-      return pixLen / reference.pixelsPerMeter;
+      return pixLen / effectivePpm;
     },
-    [reference],
+    [effectivePpm],
   );
 
   const redraw = useCallback(() => {
@@ -89,7 +115,7 @@ export default function PolygonSelect({
       ctx.stroke();
     }
 
-    if (points.length >= 2 && reference) {
+    if (points.length >= 2 && effectivePpm !== null) {
       const closed = points.length >= 3;
       const segCount = closed ? points.length : points.length - 1;
       const fontSize = Math.max(11, Math.round(canvas.width / 45));
@@ -140,7 +166,7 @@ export default function PolygonSelect({
       ctx.textBaseline = "middle";
       ctx.fillText(String(i + 1), sx(p), sy(p));
     }
-  }, [points, canvasSize, scale, phase, reference, getSegmentLength]);
+  }, [points, canvasSize, scale, phase, effectivePpm, getSegmentLength]);
 
   useEffect(() => {
     redraw();
@@ -178,6 +204,11 @@ export default function PolygonSelect({
     setPhase("drawing");
   };
 
+  const usingAutoScale =
+    autoWallHeightM != null &&
+    autoWallHeightM > 0 &&
+    (!reference || reference.pixelsPerMeter <= 0);
+
   return (
     <div className="space-y-3">
       <div className="flex items-start gap-2 text-sm">
@@ -195,6 +226,19 @@ export default function PolygonSelect({
           </span>
         )}
       </div>
+
+      {usingAutoScale && (
+        <div className="px-3 py-2 bg-indigo-50 border border-indigo-200 rounded-lg text-xs text-indigo-700 flex items-start gap-2">
+          <span className="font-bold mt-0.5">⚡</span>
+          <span>
+            Mittakaava johdetaan polygonin pystyreunoista{" "}
+            (talon nurkan korkeus <strong>{autoWallHeightM!.toFixed(2)} m</strong>).
+            {points.length < 2 && (
+              <> Klikkaa ensin pystysuora nurkka ylhäältä alas, niin mitat ilmestyvät.</>
+            )}
+          </span>
+        </div>
+      )}
 
       <div className="relative rounded-xl overflow-hidden border-2 border-slate-200 bg-slate-900">
         <canvas

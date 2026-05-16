@@ -467,7 +467,68 @@ test("9. Keystone-korjaus: nolla-kallistus ei muuta tulosta", () => {
   );
 });
 
-test("10. Vertailu: realistinen pieni talo, kahden kuvan ala", () => {
+test("10. Reaaliaikainen ppm: auto-tilan polygonin pystyreuna → metripituudet", () => {
+  // Käyttäjä klikkaa kuva 2:n nurkat. Auto-tilassa ppm johdetaan
+  // pisimmästä pystyreunasta. Tarkista että johdettu ppm on identtinen
+  // sen kanssa minkä saa kun referenssi piirretään käsin.
+  //
+  // Kuva 2: pitkä sivu 12 m × 3,6 m, otettu eri etäisyydeltä
+  // → todellinen ppm = 220 (vapaa valinta)
+  // → seinän korkeus pikselissä = 3,6 × 220 = 792 px
+  // → nurkkakorkeus (kuva 1:stä tallennettu) = 3,6 m
+
+  const truePpm = 220;
+  // 12,0 m leveys = 2640 px; 3,6 m korkeus = 792 px
+  const polygon = [
+    { x: 100, y: 1000 }, // sokkeli alavasen
+    { x: 100, y: 1000 - 792 }, // räystäs vasen (3,6 m)
+    { x: 100 + 2640, y: 1000 - 792 }, // räystäs oikea
+    { x: 100 + 2640, y: 1000 }, // sokkeli alaoikea
+  ];
+  const storedHeightM = 3.6;
+
+  // PolygonSelectin live-laskenta: findReferenceVerticalEdge palauttaa pisimmän
+  // pystyreunan; sen pituudesta jaettuna storedHeightM saadaan ppm.
+  const edge = findReferenceVerticalEdge(polygon);
+  if (!edge) return assertTrue("pystyreuna löytyy", false);
+
+  const derivedPpm = edge.pixelLength / storedHeightM;
+
+  console.log(
+    `   ℹ Pystyreunan pituus: ${edge.pixelLength.toFixed(0)} px`,
+  );
+  console.log(`   ℹ Johdettu ppm: ${derivedPpm.toFixed(2)}`);
+
+  // Esimerkkimitat reaaliaikaisesti näytettäviksi:
+  const wallTop = polygon[1];
+  const wallBottom = polygon[0];
+  const cornerHeightMeters =
+    Math.sqrt(
+      (wallTop.x - wallBottom.x) ** 2 + (wallTop.y - wallBottom.y) ** 2,
+    ) / derivedPpm;
+
+  const eaveLeft = polygon[1];
+  const eaveRight = polygon[2];
+  const eaveLengthMeters =
+    Math.sqrt(
+      (eaveRight.x - eaveLeft.x) ** 2 + (eaveRight.y - eaveLeft.y) ** 2,
+    ) / derivedPpm;
+
+  console.log(
+    `   ℹ Pystysegmentin näytetty pituus: ${cornerHeightMeters.toFixed(2)} m`,
+  );
+  console.log(
+    `   ℹ Räystäs (vaaka) näytetty pituus: ${eaveLengthMeters.toFixed(2)} m`,
+  );
+
+  let ok = true;
+  ok &= assertApproxEqual("Johdettu ppm ≈ todellinen ppm", derivedPpm, truePpm, 0.01);
+  ok &= assertApproxEqual("Pystysegmentti = tallennettu nurkkakorkeus", cornerHeightMeters, 3.6, 0.01);
+  ok &= assertApproxEqual("Räystään pituus = oikea 12 m", eaveLengthMeters, 12.0, 0.02);
+  return !!ok;
+});
+
+test("11. Vertailu: realistinen pieni talo, kahden kuvan ala", () => {
   // Realistinen omakotitalo:
   //   pitkä sivu: 12,0 m × 3,6 m = 43,2 m²
   //   pääty (harja 6,0 m): 7,0 × 3,6 + 7,0 × 2,4 / 2 = 25,2 + 8,4 = 33,6 m²
