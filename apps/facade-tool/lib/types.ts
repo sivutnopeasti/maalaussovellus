@@ -53,10 +53,9 @@ export interface AnalysisSession {
   imageWidth: number;
   imageHeight: number;
   reference: ReferenceData;
-  depthMapUrl: string;
-  /** MLSD line map — used for vertical vanishing-point keystone correction */
-  mlsdMapUrl: string | null;
-  /** Phone orientation at capture time, when in-app camera was used. */
+  /** Phone orientation at capture time, when in-app camera was used.
+   *  This is the sole source for vertical keystone correction now that
+   *  the depth/MLSD pipeline has been removed. */
   captureTilt?: CaptureTilt;
   /**
    * Known wall corner height (m) from a previous photo of the same house.

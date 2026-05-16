@@ -148,30 +148,11 @@ export default function HomePage() {
       if (!uploadRes.ok) throw new Error("Kuvan lataaminen epäonnistui.");
       const { url: uploadedImageUrl } = await uploadRes.json();
 
-      const depthRes = await fetch("/api/depth", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ imageUrl: uploadedImageUrl }),
-      });
-
-      if (!depthRes.ok) {
-        const e = await depthRes.json().catch(() => ({}));
-        throw new Error(e.error ?? "Syvyyskartan luominen epäonnistui.");
-      }
-
-      const {
-        depthMapUrl,
-        mlsdMapUrl,
-      }: { depthMapUrl: string; mlsdMapUrl: string | null } =
-        await depthRes.json();
-
       const session: AnalysisSession = {
         uploadedImageUrl,
         imageWidth: imageDimensions.w,
         imageHeight: imageDimensions.h,
         reference,
-        depthMapUrl,
-        mlsdMapUrl,
         captureTilt: captureTilt ?? undefined,
         autoWallHeightM:
           autoMode && storedWallHeight ? storedWallHeight.valueM : undefined,
@@ -446,12 +427,10 @@ export default function HomePage() {
                 <Loader2 className="w-8 h-8 text-blue-600 animate-spin" />
               </div>
               <div className="text-center space-y-1">
-                <p className="font-semibold text-slate-800">
-                  Analysoidaan kuvaa...
-                </p>
+                <p className="font-semibold text-slate-800">Ladataan kuvaa...</p>
                 <p className="text-sm text-slate-500">
-                  Lasketaan syvyyskartta ja viivat perspektiivin korjaukseen.
-                  Tämä kestää noin 15–30 sekuntia.
+                  Vie kuvan pilveen ja siirtää sinut rajaukseen muutamassa
+                  sekunnissa.
                 </p>
               </div>
               <div className="w-full max-w-xs bg-slate-100 rounded-full h-1.5 overflow-hidden">

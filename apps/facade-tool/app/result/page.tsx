@@ -106,7 +106,6 @@ export default function ResultPage() {
         session.imageHeight,
         activeReference,
         {
-          mlsdMapUrl: session.mlsdMapUrl,
           useKeystoneCorrection,
           sensorTiltBetaDeg: session.captureTilt?.cameraTiltDeg ?? null,
         },
@@ -233,40 +232,9 @@ export default function ResultPage() {
             </div>
           )}
 
-          <div className="grid grid-cols-1 lg:grid-cols-5 gap-6">
-            {/* Left — analysis maps */}
-            <div className="lg:col-span-3 space-y-4">
-              {/* Analysis maps — depth + MLSD */}
-              {(session.depthMapUrl || session.mlsdMapUrl) && (
-                <div className="bg-white rounded-2xl border border-indigo-200 overflow-hidden shadow-sm">
-                  <div className="px-4 py-3 border-b border-indigo-100">
-                    <span className="text-sm font-medium text-indigo-700">Analyysikartat</span>
-                    <span className="text-xs text-indigo-400 ml-2">käytetään pinta-alan laskennassa</span>
-                  </div>
-                  <div className={`grid gap-0 divide-x divide-slate-100 ${session.depthMapUrl && session.mlsdMapUrl ? "grid-cols-2" : "grid-cols-1"}`}>
-                    {session.depthMapUrl && (
-                      <div className="p-3 space-y-1">
-                        <p className="text-xs text-center font-medium text-slate-600">Syvyyskartta</p>
-                        <p className="text-xs text-center text-slate-400">kirkas = lähellä</p>
-                        {/* eslint-disable-next-line @next/next/no-img-element */}
-                        <img src={session.depthMapUrl} alt="Syvyyskartta" className="w-full rounded" />
-                      </div>
-                    )}
-                    {session.mlsdMapUrl && (
-                      <div className="p-3 space-y-1">
-                        <p className="text-xs text-center font-medium text-slate-600">MLSD-viivat</p>
-                        <p className="text-xs text-center text-slate-400">suorat rakenteet</p>
-                        {/* eslint-disable-next-line @next/next/no-img-element */}
-                        <img src={session.mlsdMapUrl} alt="MLSD-viivakartta" className="w-full rounded" />
-                      </div>
-                    )}
-                  </div>
-                </div>
-              )}
-            </div>
-
-            {/* Right — accordion panels */}
-            <div className="lg:col-span-2 space-y-3">
+          <div className="max-w-2xl mx-auto">
+            {/* Accordion panels */}
+            <div className="space-y-3">
 
               {/* Panel 1 — Polygon facade outline */}
               <AccordionPanel
@@ -424,14 +392,7 @@ export default function ResultPage() {
                             <span>Pystykallistus β</span>
                             <span>
                               {measurement.verticalTiltDeg.toFixed(1)}°
-                              <span className="text-slate-400">
-                                {" "}({measurement.verticalTiltSource === "sensor"
-                                  ? "anturi"
-                                  : "kuvasta"}
-                                {measurement.verticalTiltConfidence !== null &&
-                                  measurement.verticalTiltSource === "vanishing-point" &&
-                                  `, ${(measurement.verticalTiltConfidence * 100).toFixed(0)}% varmuus`})
-                              </span>
+                              <span className="text-slate-400"> (anturi)</span>
                             </span>
                           </div>
                         )}

@@ -7,9 +7,11 @@
  * (from the centre of the facade), so horizontal side-angle perspective is
  * effectively zero and only the vertical keystone matters.
  *
- * Vertical keystone (camera tilted up to fit the ridge) is corrected from:
- *   - the vertical vanishing point detected in MLSD lines, OR
- *   - the gyroscope tilt recorded by the in-app camera (when available).
+ * Vertical keystone (camera tilted up to fit the ridge) is corrected from
+ * the gyroscope tilt recorded by the in-app camera. The depth/MLSD
+ * pipeline has been removed — the in-app camera always records orientation
+ * (Android + desktop automatically, iOS after a one-tap permission), so a
+ * cloud-side vanishing-point fallback is no longer needed.
  *
  * On a vertical wall the camera-space depth Z(v) at image row v relates
  * to the vanishing-point row v_v by:
@@ -21,10 +23,6 @@
  */
 
 import type { MaskResult, ReferenceData, Point } from "./types";
-import {
-  findVerticalVanishingPoint,
-  type VanishingPointResult,
-} from "./vanishingPoint";
 
 export interface PreciseMeasurementResult {
   wallPixels: number;
@@ -34,12 +32,10 @@ export interface PreciseMeasurementResult {
   wallAreaM2: number;
   /** Per-pixel keystone correction kerroin keskimäärin (1.0 = ei korjausta). */
   keystoneCorrectionFactor: number;
-  /** Pakopisteestä johdettu pystysuora kallistus β (°). null jos ei tunnistettu / ei käytetty. */
+  /** Sensorista saatu pystysuora kallistus β (°). null jos ei tiedossa. */
   verticalTiltDeg: number | null;
-  /** Pakopistedetektion luotettavuus 0–1, null jos ei tunnistettu. */
-  verticalTiltConfidence: number | null;
   /** Lähde, josta vertikaalinen kallistus saatiin. */
-  verticalTiltSource: "vanishing-point" | "sensor" | "none";
+  verticalTiltSource: "sensor" | "none";
   method: "basic" | "keystone";
 }
 
@@ -52,47 +48,29 @@ export async function calculatePolygonMeasurement(
   imageHeight: number,
   reference: ReferenceData,
   options?: {
-    mlsdMapUrl?: string | null;
     useKeystoneCorrection?: boolean;
-    /** Optional camera tilt β (°) measured by gyroscope at capture time.
-     *  Overrides vanishing-point detection when provided. */
+    /** Camera tilt β (°) measured by gyroscope at capture time. The only
+     *  source for keystone correction now. */
     sensorTiltBetaDeg?: number | null;
   },
 ): Promise<PreciseMeasurementResult> {
   const ppm = reference.pixelsPerMeter;
   const useKeystone = options?.useKeystoneCorrection ?? true;
-  const mlsdMapUrl = options?.mlsdMapUrl ?? null;
   const sensorBeta = options?.sensorTiltBetaDeg ?? null;
 
-  // ── 1. Vertical keystone: vanishing point + sensor tilt ────────────────────
-  let vp: VanishingPointResult | null = null;
+  // ── 1. Vertical keystone from gyroscope tilt ─────────────────────────────
   let verticalTiltSource: PreciseMeasurementResult["verticalTiltSource"] = "none";
   let tiltBetaDeg: number | null = null;
 
-  if (useKeystone) {
-    if (sensorBeta !== null && Math.abs(sensorBeta) > 1) {
-      // Trust the gyroscope when available
-      tiltBetaDeg = sensorBeta;
-      verticalTiltSource = "sensor";
-    } else if (mlsdMapUrl) {
-      try {
-        vp = await findVerticalVanishingPoint(mlsdMapUrl, imageWidth, imageHeight);
-        if (vp && vp.confidence > 0.3 && Math.abs(vp.betaDeg) > 1) {
-          tiltBetaDeg = vp.betaDeg;
-          verticalTiltSource = "vanishing-point";
-        }
-      } catch {
-        // VP detection optional — silent fall-through
-      }
-    }
+  if (useKeystone && sensorBeta !== null && Math.abs(sensorBeta) > 1) {
+    tiltBetaDeg = sensorBeta;
+    verticalTiltSource = "sensor";
   }
 
   // Derive v_v in original image-pixel coords (signed offset from image center y).
-  // If sensorBeta is the source, v_v = -f / tan(β). If VP source, use vp.vyOffset.
+  // v_v = -f / tan(β) where β is the camera tilt (positive = tilted up).
   let vyOffset: number | null = null;
-  if (verticalTiltSource === "vanishing-point" && vp) {
-    vyOffset = vp.vyOffset;
-  } else if (verticalTiltSource === "sensor" && tiltBetaDeg !== null) {
+  if (verticalTiltSource === "sensor" && tiltBetaDeg !== null) {
     const f = ASSUMED_FOCAL_RATIO * imageHeight;
     const tanB = Math.tan((Math.abs(tiltBetaDeg) * Math.PI) / 180);
     if (tanB > 0.001) {
@@ -233,7 +211,6 @@ export async function calculatePolygonMeasurement(
     wallAreaM2: netAreaM2,
     keystoneCorrectionFactor,
     verticalTiltDeg: tiltBetaDeg,
-    verticalTiltConfidence: vp?.confidence ?? (verticalTiltSource === "sensor" ? 1 : null),
     verticalTiltSource,
     method: hasKeystone ? "keystone" : "basic",
   };
