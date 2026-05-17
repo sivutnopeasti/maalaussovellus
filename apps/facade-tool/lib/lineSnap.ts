@@ -160,17 +160,27 @@ export function snapToNearestLine(
 
 /**
  * Decide whether the pixel at (x, y) is a "corner" — i.e. an
- * intersection or endpoint where two or more line segments meet. Used
- * by `snapToNearestCorner` and as a tie-breaker in `snapToNearestLine`.
+ * intersection, endpoint or bend in the line graph. Used by
+ * `snapToNearestCorner` and as a tie-breaker for snap targets.
  *
- * Heuristic:
- *   - Look at the 8-neighbourhood of (x, y).
- *   - Plain mid-segment pixels have exactly 2 lit neighbours (previous +
- *     next pixel along the line).
- *   - Corners / T-junctions / X-junctions have 3 or more.
- *   - We also accept line endpoints (1 neighbour only) because MLSD
- *     often emits short line stubs at building corners that don't quite
- *     touch — a stub endpoint is just as useful a snap target.
+ * Heuristic (looking at the 8-neighbourhood of `(x, y)`):
+ *   - 0 lit neighbours → isolated pixel, not useful.
+ *   - 1 lit neighbour → line endpoint. MLSD often emits short line
+ *     stubs at building corners that don't quite touch the next line —
+ *     a stub endpoint is just as useful a snap target.
+ *   - 2 lit neighbours → could be either a plain mid-segment pixel
+ *     (the two neighbours are directly opposite each other, e.g.
+ *     (-1,0) and (+1,0) for a horizontal line) or a 90° corner /
+ *     T-junction (the two neighbours come from non-opposite
+ *     directions, e.g. (-1,0) and (0,-1)). Sum the direction vectors:
+ *     opposite directions cancel to (0,0); anything else means a
+ *     bend.
+ *   - ≥ 3 lit neighbours → always a junction (T, X, Y, …).
+ *
+ * Without the bend detection, a perfectly clean 90° corner with two
+ * 1-pixel-wide line segments meeting at exactly one shared pixel was
+ * being classified as mid-segment — the very case `snapToNearestCorner`
+ * is meant to catch.
  */
 export function isLikelyIntersection(
   x: number,
@@ -180,13 +190,26 @@ export function isLikelyIntersection(
   const { width: w, height: h, mask } = lineMap;
   if (x <= 0 || x >= w - 1 || y <= 0 || y >= h - 1) return false;
   let n = 0;
+  let sumDx = 0;
+  let sumDy = 0;
   for (let dy = -1; dy <= 1; dy++) {
     for (let dx = -1; dx <= 1; dx++) {
       if (dx === 0 && dy === 0) continue;
-      if (mask[(y + dy) * w + (x + dx)]) n++;
+      if (mask[(y + dy) * w + (x + dx)]) {
+        n++;
+        sumDx += dx;
+        sumDy += dy;
+      }
     }
   }
-  return n >= 3 || n === 1;
+  if (n === 0) return false;
+  if (n === 1) return true;
+  if (n === 2) {
+    // Pair of directly-opposite neighbours sums to (0,0) → straight
+    // mid-segment. Anything else is a bend / corner / T-junction.
+    return !(sumDx === 0 && sumDy === 0);
+  }
+  return true;
 }
 
 /**

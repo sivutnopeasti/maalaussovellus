@@ -11,6 +11,7 @@ import {
   type LineMapData,
 } from "@/lib/lineSnap";
 import { useCanvasViewport } from "@/lib/useCanvasViewport";
+import { drawLoupe } from "@/lib/canvasLoupe";
 import ZoomControls from "./ZoomControls";
 
 interface Props {
@@ -67,6 +68,11 @@ export default function PolygonSelect({
   const [snapEnabled, setSnapEnabled] = useState(true);
   const [imgDims, setImgDims] = useState({ w: 0, h: 0 });
   const [containerSize, setContainerSize] = useState({ w: 0, h: 0 });
+  /** True while the user is actively touching the canvas (or holding
+   *  a mouse button down). Drives the loupe so it only appears when the
+   *  finger / cursor is engaging the picker — not just hovering on
+   *  desktop. */
+  const [pointerActive, setPointerActive] = useState(false);
   const [points, setPoints] = useState<Point[]>([]);
   const [snapHint, setSnapHint] = useState<{ from: Point; to: Point } | null>(
     null,
@@ -389,7 +395,39 @@ export default function PolygonSelect({
     viewport.applyTransform(ctx);
     ctx.drawImage(img, 0, 0, canvasSize.w, canvasSize.h);
     drawOverlay(ctx, canvas);
-  }, [canvasSize, drawOverlay, viewport]);
+
+    // Loupe — only while the user is actively touching/holding the
+    // canvas (so it appears on mobile during a tap-and-hold but stays
+    // hidden when the user is just looking). Tracks the current
+    // cursor/finger position and shows the snap correction live so the
+    // user can release with confidence.
+    if (pointerActive && hoverSnap && phase === "drawing") {
+      const canvasPoint = {
+        x: hoverSnap.cursor.x * scale * viewport.zoom + viewport.pan.x,
+        y: hoverSnap.cursor.y * scale * viewport.zoom + viewport.pan.y,
+      };
+      ctx.save();
+      viewport.resetTransform(ctx);
+      drawLoupe(ctx, {
+        imagePoint: hoverSnap.cursor,
+        canvasPoint,
+        source: img,
+        canvasW: canvas.width,
+        canvasH: canvas.height,
+        radius: 64,
+        magnification: 2.5,
+        snapPoint: hoverSnap.snapped,
+        accent:
+          hoverSnap.kind === "corner"
+            ? "#10b981"
+            : hoverSnap.kind === "line"
+              ? "#22d3ee"
+              : "#94a3b8",
+      });
+      ctx.restore();
+      viewport.applyTransform(ctx);
+    }
+  }, [canvasSize, drawOverlay, viewport, pointerActive, hoverSnap, phase, scale]);
 
   /** Debug canvas — same dimensions as the main one. Draws the
    *  currently-active snap mask underneath (raw MLSD lines OR the
@@ -477,11 +515,11 @@ export default function PolygonSelect({
     [snapEnabled, imageWidth, imageHeight],
   );
 
-  /** Convert a React mouse/pointer event into image-space coordinates,
-   *  taking the canvas pixel-vs-CSS ratio + the current zoom/pan into
-   *  account. */
+  /** Convert any event with clientX/clientY (Mouse, Pointer or Touch
+   *  via constructed object) into image-space coordinates, accounting
+   *  for the canvas's CSS scale and the current zoom/pan. */
   const eventToImage = useCallback(
-    (e: React.MouseEvent<HTMLCanvasElement>): Point => {
+    (e: { clientX: number; clientY: number }): Point => {
       const canvas = canvasRef.current!;
       const rect = canvas.getBoundingClientRect();
       const sx = canvas.width / rect.width;
@@ -493,8 +531,12 @@ export default function PolygonSelect({
     [viewport],
   );
 
-  const handleCanvasMove = useCallback(
-    (e: React.MouseEvent<HTMLCanvasElement>) => {
+  // Composite pointer handlers — these delegate the pan/pinch logic
+  // to the viewport hook and additionally maintain the hover-snap
+  // preview and the `pointerActive` flag that drives the loupe.
+
+  const updateHover = useCallback(
+    (e: { clientX: number; clientY: number }) => {
       if (phase !== "drawing") return;
       const cursor = eventToImage(e);
       const { snapped, kind } = resolveSnap(cursor);
@@ -503,9 +545,52 @@ export default function PolygonSelect({
     [phase, eventToImage, resolveSnap],
   );
 
-  const handleCanvasLeave = useCallback(() => {
-    setHoverSnap(null);
-  }, []);
+  const onPointerDown = useCallback(
+    (e: React.PointerEvent<HTMLCanvasElement>) => {
+      viewport.eventProps.onPointerDown(e);
+      setPointerActive(true);
+      updateHover(e);
+    },
+    [viewport.eventProps, updateHover],
+  );
+
+  const onPointerMove = useCallback(
+    (e: React.PointerEvent<HTMLCanvasElement>) => {
+      viewport.eventProps.onPointerMove(e);
+      updateHover(e);
+    },
+    [viewport.eventProps, updateHover],
+  );
+
+  const onPointerUp = useCallback(
+    (e: React.PointerEvent<HTMLCanvasElement>) => {
+      viewport.eventProps.onPointerUp(e);
+      setPointerActive(false);
+      // On touch, hide the hover-dot once the finger lifts (the snap
+      // hint will flash briefly to confirm the committed snap).
+      if (e.pointerType === "touch") setHoverSnap(null);
+    },
+    [viewport.eventProps],
+  );
+
+  const onPointerCancel = useCallback(
+    (e: React.PointerEvent<HTMLCanvasElement>) => {
+      viewport.eventProps.onPointerCancel(e);
+      setPointerActive(false);
+      setHoverSnap(null);
+    },
+    [viewport.eventProps],
+  );
+
+  const onPointerLeave = useCallback(
+    (e: React.PointerEvent<HTMLCanvasElement>) => {
+      setPointerActive(false);
+      // Keep hover snap on touch (would have been cleared on lift);
+      // on mouse, clear it now since the cursor left the canvas.
+      if (e.pointerType !== "touch") setHoverSnap(null);
+    },
+    [],
+  );
 
   const handleCanvasClick = useCallback(
     (e: React.MouseEvent<HTMLCanvasElement>) => {
@@ -601,9 +686,15 @@ export default function PolygonSelect({
             width={canvasSize.w}
             height={canvasSize.h}
             onClick={handleCanvasClick}
-            onMouseMove={handleCanvasMove}
-            onMouseLeave={handleCanvasLeave}
-            {...viewport.eventProps}
+            onPointerDown={onPointerDown}
+            onPointerMove={onPointerMove}
+            onPointerUp={onPointerUp}
+            onPointerCancel={onPointerCancel}
+            onPointerLeave={onPointerLeave}
+            onWheel={viewport.eventProps.onWheel}
+            onTouchStart={viewport.eventProps.onTouchStart}
+            onTouchMove={viewport.eventProps.onTouchMove}
+            onTouchEnd={viewport.eventProps.onTouchEnd}
             className={`block select-none ${
               viewport.isPanning
                 ? "cursor-grabbing"

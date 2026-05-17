@@ -4,6 +4,7 @@ import { useRef, useEffect, useState, useCallback } from "react";
 import { Ruler, RotateCcw, Check } from "lucide-react";
 import type { Point, ReferenceData } from "@/lib/types";
 import { useCanvasViewport } from "@/lib/useCanvasViewport";
+import { drawLoupe } from "@/lib/canvasLoupe";
 import ZoomControls from "./ZoomControls";
 
 interface Props {
@@ -156,6 +157,32 @@ export default function ReferenceMeasure({ imageDataUrl, onReferenceSet }: Props
       ctx.stroke();
 
       ctx.lineCap = "butt";
+    }
+
+    // Magnifying loupe — only while the user is actively dragging a
+    // point. The loupe is drawn AFTER everything else and in screen-
+    // space (= identity transform) so it always renders crisp and
+    // never gets distorted by the current zoom.
+    if (draggingIdx !== null && points[draggingIdx]) {
+      const p = points[draggingIdx];
+      const canvasPoint = {
+        x: p.x * scale * viewport.zoom + viewport.pan.x,
+        y: p.y * scale * viewport.zoom + viewport.pan.y,
+      };
+      ctx.save();
+      viewport.resetTransform(ctx);
+      drawLoupe(ctx, {
+        imagePoint: p,
+        canvasPoint,
+        source: img,
+        canvasW: canvas.width,
+        canvasH: canvas.height,
+        radius: 64,
+        magnification: 2.5,
+        accent: "#EF4444",
+      });
+      ctx.restore();
+      viewport.applyTransform(ctx);
     }
 
     // Optional length label, rendered once the user has entered a value.
