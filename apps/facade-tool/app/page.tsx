@@ -407,6 +407,47 @@ export default function HomePage() {
                 </h2>
               </div>
 
+              {/* SAFETY NET: jos käyttäjä päätyi tähän vaiheessa mutta
+                  localStoragessa ON tallennettu nurkkakorkeus, näytä
+                  ISO nappi jolla voi ohittaa manuaalisen referenssin. */}
+              {!autoMode && storedWallHeight && imageFile && (
+                <div className="p-4 bg-emerald-50 border-2 border-emerald-300 rounded-xl space-y-3">
+                  <div className="flex items-start gap-2 text-sm text-emerald-900">
+                    <Sparkles className="w-5 h-5 shrink-0 mt-0.5 text-emerald-600" />
+                    <div>
+                      <p className="font-semibold">
+                        Tallennettu nurkkakorkeus:{" "}
+                        {storedWallHeight.valueM.toFixed(2)} m
+                      </p>
+                      <p className="text-xs mt-0.5">
+                        Voit ohittaa referenssimittauksen ja siirtyä suoraan
+                        polygonin piirtämiseen — sovellus käyttää tallennettua
+                        arvoa.
+                      </p>
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => {
+                      console.log("[capture] manual override → auto-mode", {
+                        storedWallHeight,
+                      });
+                      void runAnalysis(
+                        imageFile,
+                        imageDimensions,
+                        PLACEHOLDER_REFERENCE,
+                        captureTilt,
+                        storedWallHeight.valueM,
+                      );
+                    }}
+                    className="w-full flex items-center justify-center gap-2 py-3 bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-bold rounded-xl shadow"
+                  >
+                    <Sparkles className="w-4 h-4" />
+                    Käytä tallennettua nurkkakorkeutta ja jatka
+                    <ChevronRight className="w-4 h-4" />
+                  </button>
+                </div>
+              )}
+
               {autoMode ? (
                 <div className="p-4 bg-green-50 border border-green-200 rounded-xl space-y-2">
                   <div className="flex items-start gap-2 text-sm text-green-800">
@@ -454,6 +495,34 @@ export default function HomePage() {
                   )}
                 </>
               )}
+
+              {/* DEBUG: localStorage state — temporary, helps user
+                  identify why auto-reference may not be active. */}
+              <details className="text-[10px] font-mono text-slate-400">
+                <summary className="cursor-pointer hover:text-slate-600">
+                  Debug-tieto
+                </summary>
+                <pre className="mt-2 p-2 bg-slate-50 rounded overflow-x-auto">
+                  {JSON.stringify(
+                    {
+                      step,
+                      autoMode,
+                      storedWallHeight,
+                      reference: reference
+                        ? {
+                            meters: reference.meters,
+                            pixelsPerMeter: reference.pixelsPerMeter.toFixed(1),
+                          }
+                        : null,
+                      project: project
+                        ? { walls: project.measurements.length }
+                        : null,
+                    },
+                    null,
+                    2,
+                  )}
+                </pre>
+              </details>
             </section>
           )}
 
