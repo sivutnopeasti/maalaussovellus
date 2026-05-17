@@ -168,7 +168,11 @@ export default function ResultPage() {
         setWallHeightWarning(msg);
         console.warn("[wallHeight] no vertical edges — NOT stored");
       } else {
-        const msg = `Nurkkakorkeus ${wallHeightM.toFixed(1)} m ei ole uskottava (oltava 1-25 m). Seuraavan kuvan analysointi vaatii uuden referenssimittauksen.`;
+        const hint =
+          wallHeightM < 1
+            ? "Tarkista referenssimitta — onko mitta liian pieni (esim. <0,5 m) ja kuvattu kohde lähellä? Oikealla talolla nurkkakorkeus on yleensä 2,5–7 m."
+            : "Tarkista referenssimitta — annoitko liian suuren metrimäärän?";
+        const msg = `Nurkkakorkeus ${wallHeightM.toFixed(2)} m ei ole uskottava (sallittu väli 1–25 m). ${hint} Seuraava kuva vaatii uuden referenssimittauksen.`;
         setWallHeightWarning(msg);
         console.warn(
           "[wallHeight] estimate out of plausible range (1-25 m):",
