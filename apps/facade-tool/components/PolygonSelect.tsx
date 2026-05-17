@@ -4,7 +4,12 @@ import { useRef, useEffect, useState, useCallback, useMemo } from "react";
 import { Hexagon, RotateCcw, Check, Undo2, Magnet } from "lucide-react";
 import type { Point, PolygonData, ReferenceData } from "@/lib/types";
 import { findReferenceVerticalEdge } from "@/lib/wallHeight";
-import { buildLineMap, snapToNearestLine, type LineMapData } from "@/lib/lineSnap";
+import {
+  buildLineMap,
+  snapToNearestLine,
+  isLikelyIntersection,
+  type LineMapData,
+} from "@/lib/lineSnap";
 
 interface Props {
   imageUrl: string;
@@ -31,10 +36,15 @@ interface Props {
 
 type Phase = "drawing" | "done";
 
-/** Snap radius as a fraction of the image diagonal. ~3% is enough to
- *  catch slightly-imperfect clicks but small enough to avoid pulling
- *  to a wrong nearby line. */
-const SNAP_RADIUS_FRACTION = 0.03;
+/** Snap radius as a fraction of the image diagonal. 5% catches clicks
+ *  that are a finger-width off on a phone while still being small
+ *  enough that the snap target is unambiguous. */
+const SNAP_RADIUS_FRACTION = 0.05;
+
+/** If a candidate within this fraction of the best one is a likely
+ *  intersection (3+ neighbour line pixels), prefer it. This pulls
+ *  snaps onto building corners rather than mid-segment edge points. */
+const INTERSECTION_BIAS = 1.5;
 
 export default function PolygonSelect({
   imageUrl,
@@ -56,6 +66,14 @@ export default function PolygonSelect({
   const [snapHint, setSnapHint] = useState<{ from: Point; to: Point } | null>(
     null,
   );
+  /** Live preview of where a click at the current mouse position would
+   *  land after snapping. Drawn under the cursor while the user is
+   *  drawing, so they know exactly which edge the click will snap to
+   *  before committing. */
+  const [hoverSnap, setHoverSnap] = useState<{
+    cursor: Point;
+    snapped: Point | null;
+  } | null>(null);
   const [canvasSize, setCanvasSize] = useState({ w: 0, h: 0 });
   const [scale, setScale] = useState(1);
   const [phase, setPhase] = useState<Phase>("drawing");
@@ -244,26 +262,68 @@ export default function PolygonSelect({
       ctx.fillText(String(i + 1), sx(p), sy(p));
     }
 
-    // Snap hint — short flash showing how the click was nudged onto a
-    // detected building edge. Cleared after ~350 ms.
+    // Snap hint — flash showing how the click was nudged onto a
+    // detected building edge. Cleared after ~700 ms.
     if (snapHint) {
       ctx.save();
       ctx.strokeStyle = "#22d3ee";
-      ctx.lineWidth = 2;
-      ctx.setLineDash([3, 3]);
+      ctx.lineWidth = 3;
+      ctx.setLineDash([4, 4]);
       ctx.beginPath();
       ctx.moveTo(sx(snapHint.from), sy(snapHint.from));
       ctx.lineTo(sx(snapHint.to), sy(snapHint.to));
       ctx.stroke();
       ctx.setLineDash([]);
       ctx.beginPath();
-      ctx.arc(sx(snapHint.to), sy(snapHint.to), 11, 0, Math.PI * 2);
+      ctx.arc(sx(snapHint.to), sy(snapHint.to), 13, 0, Math.PI * 2);
       ctx.strokeStyle = "#22d3ee";
-      ctx.lineWidth = 1.5;
+      ctx.lineWidth = 2;
       ctx.stroke();
       ctx.restore();
     }
-  }, [points, scale, phase, effectivePpm, getSegmentLength, snapHint]);
+
+    // Live hover preview — shows where a click at the current cursor
+    // position would land after snapping. A bright dot at the snap
+    // target plus a thin guide line from the cursor to it.
+    if (hoverSnap && phase === "drawing") {
+      ctx.save();
+      if (hoverSnap.snapped) {
+        const cx = sx(hoverSnap.cursor);
+        const cy = sy(hoverSnap.cursor);
+        const tx = sx(hoverSnap.snapped);
+        const ty = sy(hoverSnap.snapped);
+        // Guide line cursor → snap point
+        ctx.strokeStyle = "rgba(34, 211, 238, 0.7)";
+        ctx.lineWidth = 1.5;
+        ctx.setLineDash([2, 3]);
+        ctx.beginPath();
+        ctx.moveTo(cx, cy);
+        ctx.lineTo(tx, ty);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        // Filled cyan dot at snap target
+        ctx.beginPath();
+        ctx.arc(tx, ty, 6, 0, Math.PI * 2);
+        ctx.fillStyle = "#22d3ee";
+        ctx.fill();
+        ctx.strokeStyle = "#fff";
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+      } else {
+        // No snap candidate near cursor — show a small empty ring so
+        // the user knows snap was tried and failed (helps locate the
+        // detected lines visually).
+        const cx = sx(hoverSnap.cursor);
+        const cy = sy(hoverSnap.cursor);
+        ctx.beginPath();
+        ctx.arc(cx, cy, 5, 0, Math.PI * 2);
+        ctx.strokeStyle = "rgba(148, 163, 184, 0.6)";
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
+  }, [points, scale, phase, effectivePpm, getSegmentLength, snapHint, hoverSnap]);
 
   const redraw = useCallback(() => {
     const canvas = canvasRef.current;
@@ -295,6 +355,82 @@ export default function PolygonSelect({
     redrawDebug();
   }, [redraw, redrawDebug, lineMapReady]);
 
+  /** Resolve the snap target for a given raw point in image-space.
+   *  Returns the snapped point + diagnostic info, or null when snap is
+   *  disabled / no line is within radius. Shared between mouseMove (live
+   *  preview) and click (commit). */
+  const resolveSnap = useCallback(
+    (raw: Point): { snapped: Point | null; distPx: number | null; radius: number } => {
+      const diag = Math.hypot(imageWidth, imageHeight);
+      const radius = diag * SNAP_RADIUS_FRACTION;
+      if (!snapEnabled || !lineMapRef.current) {
+        return { snapped: null, distPx: null, radius };
+      }
+      const lm = lineMapRef.current;
+      const lmScaleX = lm.width / imageWidth;
+      const lmScaleY = lm.height / imageHeight;
+      const snapped = snapToNearestLine(raw, lm, radius, lmScaleX, lmScaleY);
+      if (!snapped) return { snapped: null, distPx: null, radius };
+
+      // Intersection bias: if the candidate is on a line but NOT an
+      // intersection, do a tiny extra search in the 8-neighbourhood for
+      // an intersection pixel and prefer it if it's not too far.
+      const lx = Math.round(snapped.x * lmScaleX);
+      const ly = Math.round(snapped.y * lmScaleY);
+      if (!isLikelyIntersection(lx, ly, lm)) {
+        const intRadiusLm = Math.max(
+          2,
+          Math.round(radius * INTERSECTION_BIAS * Math.min(lmScaleX, lmScaleY)),
+        );
+        let bestX = lx;
+        let bestY = ly;
+        let bestD2 = Infinity;
+        for (let dy = -intRadiusLm; dy <= intRadiusLm; dy++) {
+          for (let dx = -intRadiusLm; dx <= intRadiusLm; dx++) {
+            const x = lx + dx;
+            const y = ly + dy;
+            if (x <= 0 || x >= lm.width - 1 || y <= 0 || y >= lm.height - 1)
+              continue;
+            if (!lm.mask[y * lm.width + x]) continue;
+            if (!isLikelyIntersection(x, y, lm)) continue;
+            const d2 = dx * dx + dy * dy;
+            if (d2 < bestD2) {
+              bestD2 = d2;
+              bestX = x;
+              bestY = y;
+            }
+          }
+        }
+        if (bestD2 !== Infinity) {
+          snapped.x = bestX / lmScaleX;
+          snapped.y = bestY / lmScaleY;
+        }
+      }
+
+      const distPx = Math.hypot(snapped.x - raw.x, snapped.y - raw.y);
+      return { snapped, distPx, radius };
+    },
+    [snapEnabled, imageWidth, imageHeight],
+  );
+
+  const handleCanvasMove = useCallback(
+    (e: React.MouseEvent<HTMLCanvasElement>) => {
+      if (phase !== "drawing") return;
+      const canvas = canvasRef.current!;
+      const rect = canvas.getBoundingClientRect();
+      const rawX = (e.clientX - rect.left) / scale;
+      const rawY = (e.clientY - rect.top) / scale;
+      const cursor: Point = { x: rawX, y: rawY };
+      const { snapped } = resolveSnap(cursor);
+      setHoverSnap({ cursor, snapped });
+    },
+    [phase, scale, resolveSnap],
+  );
+
+  const handleCanvasLeave = useCallback(() => {
+    setHoverSnap(null);
+  }, []);
+
   const handleCanvasClick = useCallback(
     (e: React.MouseEvent<HTMLCanvasElement>) => {
       if (phase !== "drawing") return;
@@ -304,43 +440,24 @@ export default function PolygonSelect({
       const rawY = (e.clientY - rect.top) / scale;
       const raw: Point = { x: rawX, y: rawY };
 
-      // Try snapping to the nearest MLSD line pixel (if the map is
-      // loaded and snap is on). MLSD on Fal returns a fixed 1024×1024
-      // image regardless of input aspect ratio, so we have to scale
-      // X and Y independently to map source-pixel coordinates onto the
-      // line-map coordinate system.
-      let final: Point = raw;
-      const diag = Math.hypot(imageWidth, imageHeight);
-      const radius = diag * SNAP_RADIUS_FRACTION;
-      if (snapEnabled && lineMapRef.current) {
-        const lm = lineMapRef.current;
-        const lmScaleX = lm.width / imageWidth;
-        const lmScaleY = lm.height / imageHeight;
-        const snapped = snapToNearestLine(raw, lm, radius, lmScaleX, lmScaleY);
-        const distPx = snapped
-          ? Math.hypot(snapped.x - raw.x, snapped.y - raw.y)
-          : null;
-        setLastSnap({ raw, snapped, distPx, radiusPx: radius });
-        console.log("[snap] click", {
-          raw: `(${rawX.toFixed(0)}, ${rawY.toFixed(0)})`,
-          snapped: snapped
-            ? `(${snapped.x.toFixed(0)}, ${snapped.y.toFixed(0)})`
-            : "null (no line within radius)",
-          distPx: distPx?.toFixed(1),
-          radiusPx: radius.toFixed(0),
-          scales: `x=${lmScaleX.toFixed(3)}, y=${lmScaleY.toFixed(3)}`,
-        });
-        if (snapped) {
-          final = snapped;
-          setSnapHint({ from: raw, to: snapped });
-          window.setTimeout(() => setSnapHint(null), 350);
-        }
-      } else {
-        setLastSnap({ raw, snapped: null, distPx: null, radiusPx: radius });
+      const { snapped, distPx, radius } = resolveSnap(raw);
+      setLastSnap({ raw, snapped, distPx, radiusPx: radius });
+      console.log("[snap] click", {
+        raw: `(${rawX.toFixed(0)}, ${rawY.toFixed(0)})`,
+        snapped: snapped
+          ? `(${snapped.x.toFixed(0)}, ${snapped.y.toFixed(0)})`
+          : "null (no line within radius)",
+        distPx: distPx?.toFixed(1),
+        radiusPx: radius.toFixed(0),
+      });
+      const final = snapped ?? raw;
+      if (snapped) {
+        setSnapHint({ from: raw, to: snapped });
+        window.setTimeout(() => setSnapHint(null), 700);
       }
       setPoints((prev) => [...prev, final]);
     },
-    [phase, scale, snapEnabled, imageWidth, imageHeight],
+    [phase, scale, resolveSnap],
   );
 
   const handleConfirm = () => {
@@ -404,7 +521,10 @@ export default function PolygonSelect({
               {!lineMapReady ? (
                 <span className="text-cyan-600">— ladataan…</span>
               ) : snapEnabled ? (
-                <span>— klikit kiinnittyvät talon reunoihin.</span>
+                <span>
+                  — <span className="text-cyan-700 font-medium">syaaninen piste</span>{" "}
+                  hiiren alla näyttää mihin klikkaus snäppää.
+                </span>
               ) : (
                 <span className="text-cyan-600">— pois käytöstä.</span>
               )}
@@ -431,6 +551,8 @@ export default function PolygonSelect({
           width={canvasSize.w}
           height={canvasSize.h}
           onClick={handleCanvasClick}
+          onMouseMove={handleCanvasMove}
+          onMouseLeave={handleCanvasLeave}
           className={`block w-full ${phase === "drawing" ? "cursor-crosshair" : "cursor-default"}`}
         />
       </div>
