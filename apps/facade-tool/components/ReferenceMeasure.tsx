@@ -161,22 +161,33 @@ export default function ReferenceMeasure({ imageDataUrl, onReferenceSet }: Props
     // Optional length label, rendered once the user has entered a value.
     if (points.length >= 2 && meters) {
       const mx = (sx(points[0]) + sx(points[1])) / 2;
-      const my = (sy(points[0]) + sy(points[1])) / 2 - viewport.dotRadius(20);
+      const my = (sy(points[0]) + sy(points[1])) / 2 - viewport.dotRadius(22);
       const fontPx = viewport.strokeWidth(14);
-      ctx.font = `bold ${fontPx}px sans-serif`;
       const label = `${meters} m`;
+
+      ctx.save();
+      ctx.font = `bold ${fontPx}px sans-serif`;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+
       const tw = ctx.measureText(label).width;
-      const padX = viewport.strokeWidth(4);
-      const padY = viewport.strokeWidth(3);
+      const padX = viewport.strokeWidth(8);
+      const padY = viewport.strokeWidth(5);
+      const bw = tw + padX * 2;
+      const bh = fontPx + padY * 2;
+      const bx = mx - bw / 2;
+      const by = my - bh / 2;
+      // Fully-rounded pill (radius = half height)
+      const radius = bh / 2;
+
+      ctx.beginPath();
+      ctx.roundRect(bx, by, bw, bh, radius);
+      ctx.fillStyle = "rgba(15, 23, 42, 0.72)";
+      ctx.fill();
+
       ctx.fillStyle = "#FFFFFF";
-      ctx.fillRect(
-        mx - tw / 2 - padX,
-        my - fontPx + padY,
-        tw + padX * 2,
-        fontPx + padY * 2,
-      );
-      ctx.fillStyle = "#EF4444";
-      ctx.fillText(label, mx - tw / 2, my);
+      ctx.fillText(label, mx, my);
+      ctx.restore();
     }
   }, [points, canvasSize, scale, meters, viewport, draggingIdx, hoverIdx]);
 

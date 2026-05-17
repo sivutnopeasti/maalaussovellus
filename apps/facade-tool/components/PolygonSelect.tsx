@@ -244,7 +244,7 @@ export default function PolygonSelect({
         const mx = (sx(a) + sx(b)) / 2;
         const my = (sy(a) + sy(b)) / 2;
         const angle = Math.atan2(b.y - a.y, b.x - a.x);
-        const offset = fontSize + viewport.strokeWidth(4);
+        const offset = fontSize + viewport.strokeWidth(6);
         const tx = mx - Math.sin(angle) * offset;
         const ty = my + Math.cos(angle) * offset;
         ctx.save();
@@ -252,14 +252,17 @@ export default function PolygonSelect({
         ctx.textAlign = "center";
         ctx.textBaseline = "middle";
         const tw = ctx.measureText(label).width;
-        const pad = viewport.strokeWidth(4);
-        const bx = tx - tw / 2 - pad;
-        const by = ty - fontSize / 2 - pad / 2;
-        const bw = tw + pad * 2;
-        const bh = fontSize + pad;
+        const padX = viewport.strokeWidth(8);
+        const padY = viewport.strokeWidth(5);
+        const bw = tw + padX * 2;
+        const bh = fontSize + padY * 2;
+        const bx = tx - bw / 2;
+        const by = ty - bh / 2;
+        // Fully-rounded "pill" — radius equals half the box height.
+        const radius = bh / 2;
         ctx.beginPath();
-        ctx.roundRect(bx, by, bw, bh, viewport.strokeWidth(4));
-        ctx.fillStyle = "rgba(0,0,0,0.68)";
+        ctx.roundRect(bx, by, bw, bh, radius);
+        ctx.fillStyle = "rgba(15, 23, 42, 0.72)";
         ctx.fill();
         ctx.fillStyle = "#fff";
         ctx.fillText(label, tx, ty);
