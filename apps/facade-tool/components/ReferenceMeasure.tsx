@@ -1,7 +1,7 @@
 "use client";
 
 import { useRef, useEffect, useState, useCallback } from "react";
-import { Ruler, RotateCcw, Check, Magnet } from "lucide-react";
+import { Ruler, RotateCcw, Check } from "lucide-react";
 import type { Point, ReferenceData } from "@/lib/types";
 import { useCanvasViewport } from "@/lib/useCanvasViewport";
 import { drawLoupe } from "@/lib/canvasLoupe";
@@ -43,7 +43,6 @@ export default function ReferenceMeasure({
   const imageRef = useRef<HTMLImageElement | null>(null);
   const lineMapRef = useRef<LineMapData | null>(null);
   const [lineMapReady, setLineMapReady] = useState(false);
-  const [snapEnabled, setSnapEnabled] = useState(true);
   const [phase, setPhase] = useState<Phase>("point1");
   const [points, setPoints] = useState<Point[]>([]);
   const [meters, setMeters] = useState("");
@@ -158,7 +157,7 @@ export default function ReferenceMeasure({
       let y = Math.max(0, Math.min(h - 1, raw.y));
       let p: Point = { x, y };
 
-      if (snapEnabled && lineMapRef.current && srcW > 0 && srcH > 0) {
+      if (lineMapRef.current && srcW > 0 && srcH > 0) {
         const lm = lineMapRef.current;
         const diag = Math.hypot(srcW, srcH);
         const r = diag * LINE_SNAP_RADIUS_FRACTION;
@@ -180,7 +179,7 @@ export default function ReferenceMeasure({
       }
       return p;
     },
-    [imgDims.h, imgDims.w, snapEnabled, srcW, srcH],
+    [imgDims.h, imgDims.w, srcW, srcH],
   );
 
   // ── Drawing ────────────────────────────────────────────────────────
@@ -633,26 +632,6 @@ export default function ReferenceMeasure({
             zoomBy={viewport.zoomBy}
             reset={viewport.reset}
           />
-        )}
-
-        {mlsdMapUrl && lineMapReady && (
-          <button
-            type="button"
-            onClick={() => setSnapEnabled((s) => !s)}
-            className={`absolute top-2 left-2 flex items-center gap-1 px-2 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider shadow z-[5] ${
-              snapEnabled
-                ? "bg-cyan-500/95 text-white"
-                : "bg-slate-900/80 text-cyan-200 border border-cyan-400/60"
-            }`}
-            title={
-              snapEnabled
-                ? "Reunatunnistus päällä (referenssipisteet)"
-                : "Ei snap"
-            }
-          >
-            <Magnet className="w-3 h-3" />
-            {snapEnabled ? "Snap" : "Ei snap"}
-          </button>
         )}
       </div>
 

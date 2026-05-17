@@ -1,7 +1,7 @@
 "use client";
 
 import { useRef, useEffect, useState, useCallback, useMemo } from "react";
-import { Hexagon, RotateCcw, Check, Undo2, Magnet } from "lucide-react";
+import { Hexagon, RotateCcw, Check, Undo2 } from "lucide-react";
 import type { Point, PolygonData, ReferenceData } from "@/lib/types";
 import { findReferenceVerticalEdge } from "@/lib/wallHeight";
 import {
@@ -58,6 +58,9 @@ type Phase = "drawing" | "done";
 const CORNER_SNAP_RADIUS_FRACTION = 0.18;
 const LINE_SNAP_RADIUS_FRACTION = 0.05;
 
+/** Screen-space hit radius for dragging polygon vertices (matches ReferenceMeasure). */
+const HIT_RADIUS_PX = 28;
+
 export default function PolygonSelect({
   imageUrl,
   imageWidth,
@@ -75,14 +78,16 @@ export default function PolygonSelect({
   const mlsdImageRef = useRef<HTMLImageElement | null>(null);
   const lineMapRef = useRef<LineMapData | null>(null);
   const [lineMapReady, setLineMapReady] = useState(false);
-  const [snapEnabled, setSnapEnabled] = useState(true);
   const [imgDims, setImgDims] = useState({ w: 0, h: 0 });
   const [containerSize, setContainerSize] = useState({ w: 0, h: 0 });
-  /** True while the user is actively touching the canvas (or holding
-   *  a mouse button down). Drives the loupe so it only appears when the
-   *  finger / cursor is engaging the picker — not just hovering on
-   *  desktop. */
-  const [pointerActive, setPointerActive] = useState(false);
+  /** Vertex being dragged; null when not dragging. */
+  const [draggingIdx, setDraggingIdx] = useState<number | null>(null);
+  /** Vertex under pointer for hover affordance. */
+  const [hoverIdx, setHoverIdx] = useState<number | null>(null);
+  const dragInfoRef = useRef<{ pointerId: number; moved: boolean } | null>(
+    null,
+  );
+  const suppressClickRef = useRef(false);
   const [points, setPoints] = useState<Point[]>([]);
   const [snapHint, setSnapHint] = useState<{ from: Point; to: Point } | null>(
     null,
@@ -336,11 +341,14 @@ export default function PolygonSelect({
       }
     }
 
-    const dotR = viewport.dotRadius(7);
+    const base = 7;
     const dotStroke = viewport.strokeWidth(2);
     const dotFontSize = viewport.strokeWidth(10);
     for (let i = 0; i < points.length; i++) {
       const p = points[i];
+      const dotR = viewport.dotRadius(
+        draggingIdx === i || hoverIdx === i ? base + 3.5 : base,
+      );
       ctx.beginPath();
       ctx.arc(sx(p), sy(p), dotR, 0, Math.PI * 2);
       ctx.fillStyle = phase === "done" ? "#16a34a" : "#f59e0b";
@@ -466,7 +474,7 @@ export default function PolygonSelect({
       }
       ctx.restore();
     }
-  }, [points, scale, phase, effectivePpm, getSegmentLength, snapHint, hoverSnap, viewport]);
+  }, [points, scale, phase, effectivePpm, getSegmentLength, snapHint, hoverSnap, viewport, draggingIdx, hoverIdx]);
 
   const redraw = useCallback(() => {
     const canvas = canvasRef.current;
@@ -530,7 +538,7 @@ export default function PolygonSelect({
       const diag = Math.hypot(imageWidth, imageHeight);
       const cornerRadius = diag * CORNER_SNAP_RADIUS_FRACTION;
       const lineRadius = diag * LINE_SNAP_RADIUS_FRACTION;
-      if (!snapEnabled || !lineMapRef.current) {
+      if (!lineMapRef.current) {
         return { snapped: null, distPx: null, radius: cornerRadius, kind: null };
       }
       const lm = lineMapRef.current;
@@ -567,7 +575,7 @@ export default function PolygonSelect({
 
       return { snapped: null, distPx: null, radius: cornerRadius, kind: null };
     },
-    [snapEnabled, imageWidth, imageHeight],
+    [imageWidth, imageHeight],
   );
 
   /** Convert any event with clientX/clientY (Mouse, Pointer or Touch
@@ -586,9 +594,23 @@ export default function PolygonSelect({
     [viewport],
   );
 
-  // Composite pointer handlers — these delegate the pan/pinch logic
-  // to the viewport hook and additionally maintain the hover-snap
-  // preview and the `pointerActive` flag that drives the loupe.
+  const hitTest = useCallback(
+    (img: Point): number | null => {
+      if (phase !== "drawing" || points.length === 0) return null;
+      const imgRadius = HIT_RADIUS_PX / (scale * viewport.zoom);
+      let bestIdx = -1;
+      let bestDist = Infinity;
+      for (let i = 0; i < points.length; i++) {
+        const d = Math.hypot(points[i].x - img.x, points[i].y - img.y);
+        if (d < imgRadius && d < bestDist) {
+          bestDist = d;
+          bestIdx = i;
+        }
+      }
+      return bestIdx === -1 ? null : bestIdx;
+    },
+    [points, phase, scale, viewport.zoom],
+  );
 
   const updateHover = useCallback(
     (e: { clientX: number; clientY: number }) => {
@@ -602,27 +624,80 @@ export default function PolygonSelect({
 
   const onPointerDown = useCallback(
     (e: React.PointerEvent<HTMLCanvasElement>) => {
+      if (e.pointerType !== "touch" && e.button !== 0) {
+        viewport.eventProps.onPointerDown(e);
+        return;
+      }
+      if (phase !== "drawing") {
+        viewport.eventProps.onPointerDown(e);
+        updateHover(e);
+        return;
+      }
+      const img = eventToImage(e);
+      const hit = hitTest(img);
+      if (hit !== null) {
+        e.currentTarget.setPointerCapture(e.pointerId);
+        dragInfoRef.current = { pointerId: e.pointerId, moved: false };
+        setDraggingIdx(hit);
+        return;
+      }
       viewport.eventProps.onPointerDown(e);
-      setPointerActive(true);
       updateHover(e);
     },
-    [viewport.eventProps, updateHover],
+    [phase, eventToImage, hitTest, viewport.eventProps, updateHover],
   );
 
   const onPointerMove = useCallback(
     (e: React.PointerEvent<HTMLCanvasElement>) => {
+      const drag = dragInfoRef.current;
+      if (drag && drag.pointerId === e.pointerId && draggingIdx !== null) {
+        drag.moved = true;
+        const img = eventToImage(e);
+        const x = Math.max(0, Math.min(imgDims.w - 1, img.x));
+        const y = Math.max(0, Math.min(imgDims.h - 1, img.y));
+        const { snapped } = resolveSnap({ x, y });
+        const p = snapped ?? { x, y };
+        setPoints((prev) => {
+          const next = [...prev];
+          next[draggingIdx] = p;
+          return next;
+        });
+        return;
+      }
+      const img = eventToImage(e);
+      const h = hitTest(img);
+      if (h !== hoverIdx) setHoverIdx(h);
       viewport.eventProps.onPointerMove(e);
       updateHover(e);
     },
-    [viewport.eventProps, updateHover],
+    [
+      eventToImage,
+      draggingIdx,
+      imgDims.w,
+      imgDims.h,
+      resolveSnap,
+      hitTest,
+      hoverIdx,
+      viewport.eventProps,
+      updateHover,
+    ],
   );
 
   const onPointerUp = useCallback(
     (e: React.PointerEvent<HTMLCanvasElement>) => {
+      const drag = dragInfoRef.current;
+      if (drag && drag.pointerId === e.pointerId) {
+        if (drag.moved) suppressClickRef.current = true;
+        dragInfoRef.current = null;
+        setDraggingIdx(null);
+        try {
+          e.currentTarget.releasePointerCapture(e.pointerId);
+        } catch {
+          /* already released */
+        }
+        return;
+      }
       viewport.eventProps.onPointerUp(e);
-      setPointerActive(false);
-      // On touch, hide the hover-dot once the finger lifts (the snap
-      // hint will flash briefly to confirm the committed snap).
       if (e.pointerType === "touch") setHoverSnap(null);
     },
     [viewport.eventProps],
@@ -630,8 +705,12 @@ export default function PolygonSelect({
 
   const onPointerCancel = useCallback(
     (e: React.PointerEvent<HTMLCanvasElement>) => {
+      if (dragInfoRef.current) {
+        dragInfoRef.current = null;
+        setDraggingIdx(null);
+        return;
+      }
       viewport.eventProps.onPointerCancel(e);
-      setPointerActive(false);
       setHoverSnap(null);
     },
     [viewport.eventProps],
@@ -639,19 +718,44 @@ export default function PolygonSelect({
 
   const onPointerLeave = useCallback(
     (e: React.PointerEvent<HTMLCanvasElement>) => {
-      setPointerActive(false);
-      // Keep hover snap on touch (would have been cleared on lift);
-      // on mouse, clear it now since the cursor left the canvas.
+      setHoverIdx(null);
       if (e.pointerType !== "touch") setHoverSnap(null);
     },
     [],
   );
 
+  const onTouchStart = useCallback(
+    (e: React.TouchEvent<HTMLCanvasElement>) => {
+      if (e.touches.length >= 2 && dragInfoRef.current) {
+        dragInfoRef.current = null;
+        setDraggingIdx(null);
+      }
+      viewport.eventProps.onTouchStart(e);
+    },
+    [viewport.eventProps],
+  );
+
+  const onTouchMovePoly = useCallback(
+    (e: React.TouchEvent<HTMLCanvasElement>) => {
+      if (dragInfoRef.current && e.touches.length === 1) {
+        e.preventDefault();
+        return;
+      }
+      viewport.eventProps.onTouchMove(e);
+    },
+    [viewport.eventProps],
+  );
+
   const handleCanvasClick = useCallback(
     (e: React.MouseEvent<HTMLCanvasElement>) => {
+      if (suppressClickRef.current) {
+        suppressClickRef.current = false;
+        return;
+      }
       if (viewport.consumeClickSuppression()) return;
       if (phase !== "drawing") return;
       const raw = eventToImage(e);
+      if (hitTest(raw) !== null) return;
 
       const { snapped, distPx, radius, kind } = resolveSnap(raw);
       console.log("[snap] click", {
@@ -680,7 +784,7 @@ export default function PolygonSelect({
       );
       setPoints((prev) => [...prev, final]);
     },
-    [phase, eventToImage, resolveSnap, viewport],
+    [phase, eventToImage, resolveSnap, viewport, hitTest],
   );
 
   const handleConfirm = () => {
@@ -697,6 +801,8 @@ export default function PolygonSelect({
   const handleReset = () => {
     setPoints([]);
     setPhase("drawing");
+    setDraggingIdx(null);
+    setHoverIdx(null);
   };
 
   const usingAutoScale =
@@ -765,17 +871,21 @@ export default function PolygonSelect({
             onPointerCancel={onPointerCancel}
             onPointerLeave={onPointerLeave}
             onWheel={viewport.eventProps.onWheel}
-            onTouchStart={viewport.eventProps.onTouchStart}
-            onTouchMove={viewport.eventProps.onTouchMove}
+            onTouchStart={onTouchStart}
+            onTouchMove={onTouchMovePoly}
             onTouchEnd={viewport.eventProps.onTouchEnd}
             className={`block select-none ${
-              viewport.isPanning
+              draggingIdx !== null
                 ? "cursor-grabbing"
-                : phase === "drawing"
-                  ? "cursor-crosshair"
-                  : viewport.zoom > 1
+                : viewport.isPanning
+                  ? "cursor-grabbing"
+                  : phase === "drawing" && hoverIdx !== null
                     ? "cursor-grab"
-                    : "cursor-default"
+                    : phase === "drawing"
+                      ? "cursor-crosshair"
+                      : viewport.zoom > 1
+                        ? "cursor-grab"
+                        : "cursor-default"
             }`}
             style={{
               maxWidth: "100%",
@@ -791,21 +901,6 @@ export default function PolygonSelect({
           />
         )}
 
-        {/* Snap status pill — floating, takes no vertical space. */}
-        {mlsdMapUrl && lineMapReady && (
-          <button
-            onClick={() => setSnapEnabled((s) => !s)}
-            className={`absolute top-2 left-2 flex items-center gap-1 px-2 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider shadow ${
-              snapEnabled
-                ? "bg-cyan-500/95 text-white"
-                : "bg-slate-900/80 text-cyan-200 border border-cyan-400/60"
-            }`}
-            title={snapEnabled ? "Reunatunnistus päällä" : "Pois käytöstä"}
-          >
-            <Magnet className="w-3 h-3" />
-            {snapEnabled ? "Snap" : "Ei snap"}
-          </button>
-        )}
       </div>
 
       {/* Action bar */}

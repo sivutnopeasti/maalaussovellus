@@ -1,8 +1,16 @@
 "use client";
 
-import { useEffect, useRef, useState, useCallback } from "react";
+import { useEffect, useRef, useState, useCallback, useSyncExternalStore } from "react";
 import { Camera, X, Loader2, AlertCircle } from "lucide-react";
 import type { CaptureTilt } from "@/lib/types";
+import {
+  subscribeOrientation,
+  getOrientationStoreVersion,
+  readOrientationAngles,
+  attachGlobalOrientation,
+  requestIOSOrientationAndAttach,
+  orientationListenerActive,
+} from "@/lib/deviceOrientationStore";
 
 interface Props {
   onCapture: (file: File, dataUrl: string, tilt: CaptureTilt | null) => void;
@@ -18,18 +26,33 @@ type DeviceOrientationEventWithPermission = typeof DeviceOrientationEvent & {
 };
 
 /**
+ * MediaStream kept for the browser tab session so reopening the camera
+ * for wall 2+ typically reuses the same permission without another
+ * system prompt (especially noticeable on mobile Safari).
+ */
+let sharedCameraStream: MediaStream | null = null;
+
+function releaseSharedCameraStream() {
+  if (sharedCameraStream) {
+    sharedCameraStream.getTracks().forEach((t) => t.stop());
+    sharedCameraStream = null;
+  }
+}
+
+const STORAGE_CAM_GRANT = "facade-camera-granted";
+
+function streamStillUsable(stream: MediaStream | null): boolean {
+  if (!stream) return false;
+  const v = stream.getVideoTracks()[0];
+  return !!v && v.readyState === "live";
+}
+
+/**
  * In-app camera with a horizontal level line.
  *
- * The line is drawn across the center of the viewfinder and tilts in real
- * time with the phone's roll (γ). When the line is within ±2° of horizontal
- * it turns green — that is the sole "OK to shoot" signal shown to the user.
- *
- * The level activates automatically:
- *  - On Android / desktop, `deviceorientation` events fire without
- *    permission, so we attach the listener on mount.
- *  - On iOS 13+ the API requires a user gesture; we show a single one-tap
- *    prompt the first time the camera opens, after which orientation is
- *    available for the rest of the session.
+ * Orientation: `deviceOrientationStore` keeps a single listener for the
+ * whole SPA session so the user does not have to tap "Aktivoi vesivaaka"
+ * again on every new capture.
  */
 export default function CameraCapture({
   onCapture,
@@ -42,17 +65,25 @@ export default function CameraCapture({
   const [error, setError] = useState<string | null>(null);
   const [starting, setStarting] = useState(true);
 
+  useSyncExternalStore(
+    subscribeOrientation,
+    getOrientationStoreVersion,
+    () => 0,
+  );
+  const { gamma, beta } = readOrientationAngles();
+
   // Sivuttainen kallistus (roll / γ). Vain tämä näytetään käyttäjälle.
-  const [gamma, setGamma] = useState<number | null>(null);
+  const roll = gamma;
   // Pitch (β) tallennetaan silti pystyperspektiivin korjausta varten,
   // mutta sitä ei näytetä.
-  const [beta, setBeta] = useState<number | null>(null);
 
-  const [orientationPermission, setOrientationPermission] = useState<
-    "unknown" | "granted" | "denied" | "unsupported"
-  >("unknown");
-
-  // ── Start camera ──────────────────────────────────────────────────────────
+  const DOE =
+    typeof window !== "undefined"
+      ? (window.DeviceOrientationEvent as DeviceOrientationEventWithPermission | undefined)
+      : undefined;
+  const isIosMotionApi =
+    typeof DOE?.requestPermission === "function";
+  // ── Start / reuse camera ─────────────────────────────────────────────────
   useEffect(() => {
     let cancelled = false;
     const start = async () => {
@@ -64,24 +95,37 @@ export default function CameraCapture({
           setStarting(false);
           return;
         }
+
         let s: MediaStream;
-        try {
-          s = await navigator.mediaDevices.getUserMedia({
-            video: {
-              facingMode: { ideal: "environment" },
-              width: { ideal: 1920 },
-              height: { ideal: 1080 },
-            },
-            audio: false,
-          });
-        } catch {
-          s = await navigator.mediaDevices.getUserMedia({
-            video: true,
-            audio: false,
-          });
+
+        if (streamStillUsable(sharedCameraStream)) {
+          s = sharedCameraStream!;
+        } else {
+          releaseSharedCameraStream();
+          try {
+            s = await navigator.mediaDevices.getUserMedia({
+              video: {
+                facingMode: { ideal: "environment" },
+                width: { ideal: 1920 },
+                height: { ideal: 1080 },
+              },
+              audio: false,
+            });
+          } catch {
+            s = await navigator.mediaDevices.getUserMedia({
+              video: true,
+              audio: false,
+            });
+          }
+          sharedCameraStream = s;
+          try {
+            sessionStorage.setItem(STORAGE_CAM_GRANT, "1");
+          } catch {
+            /* private mode */
+          }
         }
+
         if (cancelled) {
-          s.getTracks().forEach((t) => t.stop());
           return;
         }
         streamRef.current = s;
@@ -99,15 +143,17 @@ export default function CameraCapture({
         setStarting(false);
       }
     };
-    start();
+    void start();
     return () => {
       cancelled = true;
-      streamRef.current?.getTracks().forEach((t) => t.stop());
+      /** Do not stop tracks here — keep `sharedCameraStream` alive for the
+       *  next wall. Tracks are cleared in `releaseSharedCameraStream` when
+       *  the user leaves the camera flow via the close button. */
       streamRef.current = null;
     };
   }, []);
 
-  // ── Attach stream to <video> once the element mounts ─────────────────────
+  // ── Attach stream to <video> once the element mounts ───────────────────
   useEffect(() => {
     if (!starting && streamRef.current && videoRef.current) {
       videoRef.current.srcObject = streamRef.current;
@@ -117,61 +163,31 @@ export default function CameraCapture({
     }
   }, [starting]);
 
-  // ── Orientation listener ──────────────────────────────────────────────────
-  // Activates automatically on Android / desktop. On iOS we expose a button
-  // (rendered below) because requestPermission needs a user gesture.
-  const attachOrientation = useCallback(() => {
-    const handler = (e: DeviceOrientationEvent) => {
-      setGamma(e.gamma);
-      setBeta(e.beta);
-    };
-    window.addEventListener("deviceorientation", handler);
-    setOrientationPermission("granted");
-    return () => window.removeEventListener("deviceorientation", handler);
-  }, []);
-
+  // ── Global orientation: Android/desktop immediately; iOS via button ───
   useEffect(() => {
-    const DOE = window.DeviceOrientationEvent as
-      | DeviceOrientationEventWithPermission
-      | undefined;
-    if (typeof DOE === "undefined") {
-      setOrientationPermission("unsupported");
-      return;
+    if (typeof window === "undefined" || !DOE) return;
+    if (!isIosMotionApi) {
+      attachGlobalOrientation();
     }
-    // Devices that do NOT require permission (Android, desktop) → attach now.
-    if (typeof DOE.requestPermission !== "function") {
-      return attachOrientation();
-    }
-    // iOS — waits for user gesture (the "Aktivoi vesivaaka" button below).
-  }, [attachOrientation]);
+  }, [DOE, isIosMotionApi]);
 
-  const requestIOSOrientation = useCallback(async () => {
-    try {
-      const DOE = window.DeviceOrientationEvent as DeviceOrientationEventWithPermission;
-      if (typeof DOE?.requestPermission === "function") {
-        const res = await DOE.requestPermission();
-        if (res === "granted") {
-          attachOrientation();
-        } else {
-          setOrientationPermission("denied");
-        }
-      }
-    } catch {
-      setOrientationPermission("denied");
-    }
-  }, [attachOrientation]);
-
-  // ── Level state ───────────────────────────────────────────────────────────
-  const TILT_OK = 2; // ± degrees considered level
+  const TILT_OK = 2;
   const TILT_WARN = 5;
-  const roll = gamma; // sivuttainen kallistus
   const isLevel = roll !== null && Math.abs(roll) <= TILT_OK;
   const isBad = roll !== null && Math.abs(roll) > TILT_WARN;
 
-  // ── Capture ───────────────────────────────────────────────────────────────
+  const handleClose = useCallback(() => {
+    releaseSharedCameraStream();
+    onClose();
+  }, [onClose]);
+
   const handleCapture = useCallback(async () => {
+    if (isIosMotionApi && !orientationListenerActive()) {
+      await requestIOSOrientationAndAttach();
+    }
     const video = videoRef.current;
-    if (!video || !streamRef.current) return;
+    if (!video || !sharedCameraStream) return;
+    const { beta: bNow, gamma: gNow } = readOrientationAngles();
     const canvas = document.createElement("canvas");
     canvas.width = video.videoWidth;
     canvas.height = video.videoHeight;
@@ -186,22 +202,22 @@ export default function CameraCapture({
     });
     const dataUrl = canvas.toDataURL("image/jpeg", 0.92);
     const tilt: CaptureTilt | null =
-      beta !== null
+      bNow !== null
         ? {
-            beta,
-            gamma: gamma ?? 0,
-            cameraTiltDeg: 90 - beta,
+            beta: bNow,
+            gamma: gNow ?? 0,
+            cameraTiltDeg: 90 - bNow,
           }
         : null;
     onCapture(file, dataUrl, tilt);
-  }, [beta, gamma, onCapture]);
+  }, [onCapture, isIosMotionApi]);
 
   return (
     <div className="fixed inset-0 z-50 bg-black flex flex-col">
       {/* Top bar */}
       <div className="flex items-center justify-between px-4 py-3 bg-black/80 text-white">
         <button
-          onClick={onClose}
+          onClick={handleClose}
           className="p-2 rounded-full hover:bg-white/10"
           title="Sulje"
         >
@@ -218,7 +234,7 @@ export default function CameraCapture({
             <AlertCircle className="w-10 h-10 text-red-400" />
             <p className="text-sm">{error}</p>
             <button
-              onClick={onClose}
+              onClick={handleClose}
               className="px-4 py-2 bg-white/10 hover:bg-white/20 rounded-lg text-sm"
             >
               Sulje
@@ -238,44 +254,45 @@ export default function CameraCapture({
               className="absolute inset-0 w-full h-full object-cover"
             />
 
-            {/* iOS-only: one-tap permission for the level */}
-            {orientationPermission === "unknown" && (
-              <div className="absolute top-4 left-1/2 -translate-x-1/2 z-10">
-                <button
-                  onClick={requestIOSOrientation}
-                  className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-xs rounded-lg shadow"
-                >
-                  Aktivoi vesivaaka
-                </button>
-              </div>
-            )}
-
             {/* Horizontal level line — the only visible level indicator */}
             <LevelLine roll={roll} isLevel={isLevel} isBad={isBad} />
           </>
         )}
       </div>
 
-      {/* Bottom controls */}
+      {/* Bottom controls — shutter with optional iOS level button on top */}
       <div className="px-6 py-6 bg-black/80 flex flex-col items-center gap-3">
-        {/* Capture button */}
-        <button
-          onClick={handleCapture}
-          disabled={starting || !!error}
-          className="relative w-20 h-20 rounded-full bg-white disabled:bg-white/40 flex items-center justify-center active:scale-95 transition-transform"
-          title="Ota kuva"
-        >
-          <div
-            className={`w-16 h-16 rounded-full border-4 transition-colors ${
-              isLevel
-                ? "border-green-500"
-                : isBad
-                  ? "border-red-500"
-                  : "border-slate-300"
-            }`}
-          />
-          <Camera className="absolute w-7 h-7 text-slate-700" />
-        </button>
+        <div className="relative w-20 h-20 shrink-0">
+          <button
+            type="button"
+            onClick={handleCapture}
+            disabled={starting || !!error}
+            className="relative w-20 h-20 rounded-full bg-white disabled:bg-white/40 flex items-center justify-center active:scale-95 transition-transform"
+            title={
+              isIosMotionApi && !orientationListenerActive()
+                ? "Salli liikeanturi ja ota kuva"
+                : "Ota kuva"
+            }
+          >
+            {isIosMotionApi && !orientationListenerActive() && (
+              <span className="absolute inset-0 z-10 flex items-center justify-center px-1 pointer-events-none">
+                <span className="bg-blue-600/95 text-white text-[8px] font-bold leading-tight text-center rounded-md px-1.5 py-1 shadow-md max-w-[4.5rem]">
+                  Aktivoi vesivaaka
+                </span>
+              </span>
+            )}
+            <div
+              className={`w-16 h-16 rounded-full border-4 transition-colors ${
+                isLevel
+                  ? "border-green-500"
+                  : isBad
+                    ? "border-red-500"
+                    : "border-slate-300"
+              }`}
+            />
+            <Camera className="absolute w-7 h-7 text-slate-700" />
+          </button>
+        </div>
 
         <p className="text-xs text-white/70 text-center max-w-xs">
           {hint ??
@@ -288,12 +305,6 @@ export default function CameraCapture({
   );
 }
 
-// ─── Horizontal level line ───────────────────────────────────────────────────
-//
-// A single line drawn across the middle of the viewfinder, rotated by the
-// phone's roll. Colour: yellow while tilted, green when within ±2°, red
-// when severely tilted.
-
 interface LevelLineProps {
   roll: number | null;
   isLevel: boolean;
@@ -301,13 +312,12 @@ interface LevelLineProps {
 }
 
 function LevelLine({ roll, isLevel, isBad }: LevelLineProps) {
-  // While we don't have orientation data yet, fall back to a static line.
   const angle = roll ?? 0;
   const color = isLevel
-    ? "rgba(34, 197, 94, 0.95)" // green
+    ? "rgba(34, 197, 94, 0.95)"
     : isBad
-      ? "rgba(239, 68, 68, 0.95)" // red
-      : "rgba(255, 255, 255, 0.85)"; // neutral white while user adjusts
+      ? "rgba(239, 68, 68, 0.95)"
+      : "rgba(255, 255, 255, 0.85)";
   const shadow = isLevel
     ? "0 0 12px rgba(34, 197, 94, 0.7)"
     : isBad
@@ -324,7 +334,6 @@ function LevelLine({ roll, isLevel, isBad }: LevelLineProps) {
           className="h-[3px] w-[280px] rounded-full"
           style={{ backgroundColor: color, boxShadow: shadow }}
         />
-        {/* Center dot */}
         <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2">
           <div
             className="w-2 h-2 rounded-full"
