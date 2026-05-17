@@ -12,6 +12,8 @@ import {
   type LineMapData,
 } from "@/lib/lineSnap";
 import { buildDepthEdgeMask } from "@/lib/depthEdge";
+import { useCanvasViewport } from "@/lib/useCanvasViewport";
+import ZoomControls from "./ZoomControls";
 
 interface Props {
   imageUrl: string;
@@ -104,6 +106,12 @@ export default function PolygonSelect({
   const [canvasSize, setCanvasSize] = useState({ w: 0, h: 0 });
   const [scale, setScale] = useState(1);
   const [phase, setPhase] = useState<Phase>("drawing");
+
+  const viewport = useCanvasViewport({
+    imageScale: scale,
+    canvasW: canvasSize.w,
+    canvasH: canvasSize.h,
+  });
   /** Debug stats published once the MLSD raster is decoded. */
   const [mlsdStats, setMlsdStats] = useState<{
     lmW: number;
@@ -285,10 +293,12 @@ export default function PolygonSelect({
 
   /** Pure draw function — draws polygon points, edges and labels onto
    *  whatever canvas is supplied. Used by both the main canvas (over
-   *  the source photo) and the debug canvas (over the MLSD line map). */
+   *  the source photo) and the debug canvas (over the MLSD line map).
+   *  Caller has already applied the viewport transform (zoom + pan),
+   *  so coordinates here are in canvas-base (pre-zoom) pixels. */
   const drawOverlay = useCallback(
     (ctx: CanvasRenderingContext2D, canvas: HTMLCanvasElement) => {
-    if (points.length === 0) return;
+    if (points.length === 0 && !hoverSnap) return;
 
     const sx = (p: Point) => p.x * scale;
     const sy = (p: Point) => p.y * scale;
@@ -301,8 +311,10 @@ export default function PolygonSelect({
       ctx.fillStyle = "rgba(34, 197, 94, 0.18)";
       ctx.fill();
       ctx.strokeStyle = phase === "done" ? "#16a34a" : "#f59e0b";
-      ctx.lineWidth = 2.5;
-      ctx.setLineDash(phase === "done" ? [] : [8, 4]);
+      ctx.lineWidth = viewport.strokeWidth(2.5);
+      const dashLen = viewport.strokeWidth(8);
+      const dashGap = viewport.strokeWidth(4);
+      ctx.setLineDash(phase === "done" ? [] : [dashLen, dashGap]);
       ctx.stroke();
       ctx.setLineDash([]);
     } else if (points.length === 2) {
@@ -310,14 +322,16 @@ export default function PolygonSelect({
       ctx.moveTo(sx(points[0]), sy(points[0]));
       ctx.lineTo(sx(points[1]), sy(points[1]));
       ctx.strokeStyle = "#f59e0b";
-      ctx.lineWidth = 2;
+      ctx.lineWidth = viewport.strokeWidth(2);
       ctx.stroke();
     }
 
     if (points.length >= 2 && effectivePpm !== null) {
       const closed = points.length >= 3;
       const segCount = closed ? points.length : points.length - 1;
-      const fontSize = Math.max(11, Math.round(canvas.width / 45));
+      const fontSize = viewport.strokeWidth(
+        Math.max(11, Math.round(canvas.width / 45)),
+      );
       for (let i = 0; i < segCount; i++) {
         const a = points[i];
         const b = points[(i + 1) % points.length];
@@ -327,7 +341,7 @@ export default function PolygonSelect({
         const mx = (sx(a) + sx(b)) / 2;
         const my = (sy(a) + sy(b)) / 2;
         const angle = Math.atan2(b.y - a.y, b.x - a.x);
-        const offset = fontSize + 4;
+        const offset = fontSize + viewport.strokeWidth(4);
         const tx = mx - Math.sin(angle) * offset;
         const ty = my + Math.cos(angle) * offset;
         ctx.save();
@@ -335,13 +349,13 @@ export default function PolygonSelect({
         ctx.textAlign = "center";
         ctx.textBaseline = "middle";
         const tw = ctx.measureText(label).width;
-        const pad = 4;
+        const pad = viewport.strokeWidth(4);
         const bx = tx - tw / 2 - pad;
         const by = ty - fontSize / 2 - pad / 2;
         const bw = tw + pad * 2;
         const bh = fontSize + pad;
         ctx.beginPath();
-        ctx.roundRect(bx, by, bw, bh, 4);
+        ctx.roundRect(bx, by, bw, bh, viewport.strokeWidth(4));
         ctx.fillStyle = "rgba(0,0,0,0.68)";
         ctx.fill();
         ctx.fillStyle = "#fff";
@@ -350,16 +364,19 @@ export default function PolygonSelect({
       }
     }
 
+    const dotR = viewport.dotRadius(7);
+    const dotStroke = viewport.strokeWidth(2);
+    const dotFontSize = viewport.strokeWidth(10);
     for (let i = 0; i < points.length; i++) {
       const p = points[i];
       ctx.beginPath();
-      ctx.arc(sx(p), sy(p), 7, 0, Math.PI * 2);
+      ctx.arc(sx(p), sy(p), dotR, 0, Math.PI * 2);
       ctx.fillStyle = phase === "done" ? "#16a34a" : "#f59e0b";
       ctx.fill();
       ctx.strokeStyle = "#fff";
-      ctx.lineWidth = 2;
+      ctx.lineWidth = dotStroke;
       ctx.stroke();
-      ctx.font = "bold 10px sans-serif";
+      ctx.font = `bold ${dotFontSize}px sans-serif`;
       ctx.fillStyle = "#fff";
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
@@ -371,24 +388,23 @@ export default function PolygonSelect({
     if (snapHint) {
       ctx.save();
       ctx.strokeStyle = "#22d3ee";
-      ctx.lineWidth = 3;
-      ctx.setLineDash([4, 4]);
+      ctx.lineWidth = viewport.strokeWidth(3);
+      ctx.setLineDash([viewport.strokeWidth(4), viewport.strokeWidth(4)]);
       ctx.beginPath();
       ctx.moveTo(sx(snapHint.from), sy(snapHint.from));
       ctx.lineTo(sx(snapHint.to), sy(snapHint.to));
       ctx.stroke();
       ctx.setLineDash([]);
       ctx.beginPath();
-      ctx.arc(sx(snapHint.to), sy(snapHint.to), 13, 0, Math.PI * 2);
+      ctx.arc(sx(snapHint.to), sy(snapHint.to), viewport.dotRadius(13), 0, Math.PI * 2);
       ctx.strokeStyle = "#22d3ee";
-      ctx.lineWidth = 2;
+      ctx.lineWidth = viewport.strokeWidth(2);
       ctx.stroke();
       ctx.restore();
     }
 
     // Live hover preview — shows where a click at the current cursor
-    // position would land after snapping. A bright dot at the snap
-    // target plus a thin guide line from the cursor to it.
+    // position would land after snapping.
     if (hoverSnap && phase === "drawing") {
       ctx.save();
       if (hoverSnap.snapped) {
@@ -396,48 +412,45 @@ export default function PolygonSelect({
         const cy = sy(hoverSnap.cursor);
         const tx = sx(hoverSnap.snapped);
         const ty = sy(hoverSnap.snapped);
-        // Guide line cursor → snap point
         ctx.strokeStyle = "rgba(34, 211, 238, 0.7)";
-        ctx.lineWidth = 1.5;
-        ctx.setLineDash([2, 3]);
+        ctx.lineWidth = viewport.strokeWidth(1.5);
+        ctx.setLineDash([viewport.strokeWidth(2), viewport.strokeWidth(3)]);
         ctx.beginPath();
         ctx.moveTo(cx, cy);
         ctx.lineTo(tx, ty);
         ctx.stroke();
         ctx.setLineDash([]);
-        // Filled cyan dot at snap target
         ctx.beginPath();
-        ctx.arc(tx, ty, 6, 0, Math.PI * 2);
+        ctx.arc(tx, ty, viewport.dotRadius(6), 0, Math.PI * 2);
         ctx.fillStyle = "#22d3ee";
         ctx.fill();
         ctx.strokeStyle = "#fff";
-        ctx.lineWidth = 1.5;
+        ctx.lineWidth = viewport.strokeWidth(1.5);
         ctx.stroke();
       } else {
-        // No snap candidate near cursor — show a small empty ring so
-        // the user knows snap was tried and failed (helps locate the
-        // detected lines visually).
         const cx = sx(hoverSnap.cursor);
         const cy = sy(hoverSnap.cursor);
         ctx.beginPath();
-        ctx.arc(cx, cy, 5, 0, Math.PI * 2);
+        ctx.arc(cx, cy, viewport.dotRadius(5), 0, Math.PI * 2);
         ctx.strokeStyle = "rgba(148, 163, 184, 0.6)";
-        ctx.lineWidth = 1.5;
+        ctx.lineWidth = viewport.strokeWidth(1.5);
         ctx.stroke();
       }
       ctx.restore();
     }
-  }, [points, scale, phase, effectivePpm, getSegmentLength, snapHint, hoverSnap]);
+  }, [points, scale, phase, effectivePpm, getSegmentLength, snapHint, hoverSnap, viewport]);
 
   const redraw = useCallback(() => {
     const canvas = canvasRef.current;
     const img = imageRef.current;
     if (!canvas || !img || canvasSize.w === 0) return;
     const ctx = canvas.getContext("2d")!;
+    viewport.resetTransform(ctx);
     ctx.clearRect(0, 0, canvas.width, canvas.height);
-    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+    viewport.applyTransform(ctx);
+    ctx.drawImage(img, 0, 0, canvasSize.w, canvasSize.h);
     drawOverlay(ctx, canvas);
-  }, [canvasSize, drawOverlay]);
+  }, [canvasSize, drawOverlay, viewport]);
 
   /** Debug canvas — same dimensions as the main one. Draws the
    *  currently-active snap mask underneath (raw MLSD lines OR the
@@ -448,8 +461,10 @@ export default function PolygonSelect({
     const lm = lineMapRef.current;
     if (!canvas || !lm || canvasSize.w === 0) return;
     const ctx = canvas.getContext("2d")!;
+    viewport.resetTransform(ctx);
     ctx.fillStyle = "#000";
     ctx.fillRect(0, 0, canvas.width, canvas.height);
+    viewport.applyTransform(ctx);
 
     // Render the active mask. It's typically at MLSD resolution
     // (1024² for Fal), so we put it on an off-screen canvas first then
@@ -463,8 +478,6 @@ export default function PolygonSelect({
     const tintCyan = snapMode === "mlsd+depth";
     for (let i = 0, j = 0; i < lm.mask.length; i++, j += 4) {
       if (lm.mask[i]) {
-        // Cyan when depth-narrowed, white otherwise — easy to see at a
-        // glance whether the silhouette filter is active.
         data[j] = tintCyan ? 34 : 255;
         data[j + 1] = tintCyan ? 211 : 255;
         data[j + 2] = tintCyan ? 238 : 255;
@@ -474,9 +487,9 @@ export default function PolygonSelect({
       }
     }
     offCtx.putImageData(imgData, 0, 0);
-    ctx.drawImage(offscreen, 0, 0, canvas.width, canvas.height);
+    ctx.drawImage(offscreen, 0, 0, canvasSize.w, canvasSize.h);
     drawOverlay(ctx, canvas);
-  }, [canvasSize, drawOverlay, snapMode]);
+  }, [canvasSize, drawOverlay, snapMode, viewport]);
 
   useEffect(() => {
     redraw();
@@ -541,18 +554,30 @@ export default function PolygonSelect({
     [snapEnabled, imageWidth, imageHeight],
   );
 
+  /** Convert a React mouse/pointer event into image-space coordinates,
+   *  taking the canvas pixel-vs-CSS ratio + the current zoom/pan into
+   *  account. */
+  const eventToImage = useCallback(
+    (e: React.MouseEvent<HTMLCanvasElement>): Point => {
+      const canvas = canvasRef.current!;
+      const rect = canvas.getBoundingClientRect();
+      const sx = canvas.width / rect.width;
+      const sy = canvas.height / rect.height;
+      const screenX = (e.clientX - rect.left) * sx;
+      const screenY = (e.clientY - rect.top) * sy;
+      return viewport.screenToImage(screenX, screenY);
+    },
+    [viewport],
+  );
+
   const handleCanvasMove = useCallback(
     (e: React.MouseEvent<HTMLCanvasElement>) => {
       if (phase !== "drawing") return;
-      const canvas = canvasRef.current!;
-      const rect = canvas.getBoundingClientRect();
-      const rawX = (e.clientX - rect.left) / scale;
-      const rawY = (e.clientY - rect.top) / scale;
-      const cursor: Point = { x: rawX, y: rawY };
+      const cursor = eventToImage(e);
       const { snapped } = resolveSnap(cursor);
       setHoverSnap({ cursor, snapped });
     },
-    [phase, scale, resolveSnap],
+    [phase, eventToImage, resolveSnap],
   );
 
   const handleCanvasLeave = useCallback(() => {
@@ -561,17 +586,14 @@ export default function PolygonSelect({
 
   const handleCanvasClick = useCallback(
     (e: React.MouseEvent<HTMLCanvasElement>) => {
+      if (viewport.consumeClickSuppression()) return;
       if (phase !== "drawing") return;
-      const canvas = canvasRef.current!;
-      const rect = canvas.getBoundingClientRect();
-      const rawX = (e.clientX - rect.left) / scale;
-      const rawY = (e.clientY - rect.top) / scale;
-      const raw: Point = { x: rawX, y: rawY };
+      const raw = eventToImage(e);
 
       const { snapped, distPx, radius } = resolveSnap(raw);
       setLastSnap({ raw, snapped, distPx, radiusPx: radius });
       console.log("[snap] click", {
-        raw: `(${rawX.toFixed(0)}, ${rawY.toFixed(0)})`,
+        raw: `(${raw.x.toFixed(0)}, ${raw.y.toFixed(0)})`,
         snapped: snapped
           ? `(${snapped.x.toFixed(0)}, ${snapped.y.toFixed(0)})`
           : "null (no line within radius)",
@@ -585,7 +607,7 @@ export default function PolygonSelect({
       }
       setPoints((prev) => [...prev, final]);
     },
-    [phase, scale, resolveSnap],
+    [phase, eventToImage, resolveSnap, viewport],
   );
 
   const handleConfirm = () => {
@@ -690,8 +712,24 @@ export default function PolygonSelect({
           onClick={handleCanvasClick}
           onMouseMove={handleCanvasMove}
           onMouseLeave={handleCanvasLeave}
-          className={`block w-full ${phase === "drawing" ? "cursor-crosshair" : "cursor-default"}`}
+          {...viewport.eventProps}
+          className={`block w-full select-none ${
+            viewport.isPanning
+              ? "cursor-grabbing"
+              : phase === "drawing"
+                ? "cursor-crosshair"
+                : viewport.zoom > 1
+                  ? "cursor-grab"
+                  : "cursor-default"
+          }`}
         />
+        {canvasSize.w > 0 && (
+          <ZoomControls
+            zoom={viewport.zoom}
+            zoomBy={viewport.zoomBy}
+            reset={viewport.reset}
+          />
+        )}
       </div>
 
       {/* TEMPORARY DEBUG: MLSD line-map view with the same polygon

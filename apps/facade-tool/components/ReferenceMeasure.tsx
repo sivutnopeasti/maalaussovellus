@@ -3,6 +3,8 @@
 import { useRef, useEffect, useState, useCallback } from "react";
 import { Ruler, RotateCcw, Check } from "lucide-react";
 import type { Point, ReferenceData } from "@/lib/types";
+import { useCanvasViewport } from "@/lib/useCanvasViewport";
+import ZoomControls from "./ZoomControls";
 
 interface Props {
   imageDataUrl: string;
@@ -20,7 +22,12 @@ export default function ReferenceMeasure({ imageDataUrl, onReferenceSet }: Props
   const [canvasSize, setCanvasSize] = useState({ w: 0, h: 0 });
   const [scale, setScale] = useState(1);
 
-  // Load the image and set canvas size
+  const viewport = useCanvasViewport({
+    imageScale: scale,
+    canvasW: canvasSize.w,
+    canvasH: canvasSize.h,
+  });
+
   useEffect(() => {
     const img = new Image();
     img.onload = () => {
@@ -34,25 +41,25 @@ export default function ReferenceMeasure({ imageDataUrl, onReferenceSet }: Props
     img.src = imageDataUrl;
   }, [imageDataUrl]);
 
-  // Redraw canvas whenever points or phase changes
   const redraw = useCallback(() => {
     const canvas = canvasRef.current;
     const img = imageRef.current;
     if (!canvas || !img || canvasSize.w === 0) return;
     const ctx = canvas.getContext("2d")!;
+    viewport.resetTransform(ctx);
     ctx.clearRect(0, 0, canvas.width, canvas.height);
-    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+    viewport.applyTransform(ctx);
+    ctx.drawImage(img, 0, 0, canvasSize.w, canvasSize.h);
 
     if (points.length === 0) return;
 
     const sx = (p: Point) => p.x * scale;
     const sy = (p: Point) => p.y * scale;
 
-    ctx.lineWidth = 2;
     ctx.strokeStyle = "#EF4444";
     ctx.fillStyle = "#EF4444";
+    ctx.lineWidth = viewport.strokeWidth(2);
 
-    // Draw line between the two points
     if (points.length >= 2) {
       ctx.beginPath();
       ctx.moveTo(sx(points[0]), sy(points[0]));
@@ -60,26 +67,37 @@ export default function ReferenceMeasure({ imageDataUrl, onReferenceSet }: Props
       ctx.stroke();
     }
 
-    // Draw endpoint circles
+    const dotR = viewport.dotRadius(6);
     for (const p of points) {
       ctx.beginPath();
-      ctx.arc(sx(p), sy(p), 6, 0, Math.PI * 2);
+      ctx.arc(sx(p), sy(p), dotR, 0, Math.PI * 2);
       ctx.fill();
+      ctx.lineWidth = viewport.strokeWidth(1.5);
+      ctx.strokeStyle = "#fff";
+      ctx.stroke();
+      ctx.strokeStyle = "#EF4444";
     }
 
-    // Distance label
     if (points.length >= 2 && meters) {
       const mx = (sx(points[0]) + sx(points[1])) / 2;
-      const my = (sy(points[0]) + sy(points[1])) / 2 - 12;
-      ctx.font = "bold 14px sans-serif";
-      ctx.fillStyle = "#FFFFFF";
+      const my = (sy(points[0]) + sy(points[1])) / 2 - viewport.dotRadius(12);
+      const fontPx = viewport.strokeWidth(14);
+      ctx.font = `bold ${fontPx}px sans-serif`;
       const label = `${meters} m`;
       const tw = ctx.measureText(label).width;
-      ctx.fillRect(mx - tw / 2 - 4, my - 14, tw + 8, 20);
+      const padX = viewport.strokeWidth(4);
+      const padY = viewport.strokeWidth(3);
+      ctx.fillStyle = "#FFFFFF";
+      ctx.fillRect(
+        mx - tw / 2 - padX,
+        my - fontPx + padY,
+        tw + padX * 2,
+        fontPx + padY * 2,
+      );
       ctx.fillStyle = "#EF4444";
       ctx.fillText(label, mx - tw / 2, my);
     }
-  }, [points, canvasSize, scale, meters]);
+  }, [points, canvasSize, scale, meters, viewport]);
 
   useEffect(() => {
     redraw();
@@ -87,12 +105,15 @@ export default function ReferenceMeasure({ imageDataUrl, onReferenceSet }: Props
 
   const handleCanvasClick = useCallback(
     (e: React.MouseEvent<HTMLCanvasElement>) => {
+      if (viewport.consumeClickSuppression()) return;
       if (phase !== "point1" && phase !== "point2") return;
       const canvas = canvasRef.current!;
       const rect = canvas.getBoundingClientRect();
-      // Convert to original image coordinates
-      const x = (e.clientX - rect.left) / scale;
-      const y = (e.clientY - rect.top) / scale;
+      const sx = canvas.width / rect.width;
+      const sy = canvas.height / rect.height;
+      const screenX = (e.clientX - rect.left) * sx;
+      const screenY = (e.clientY - rect.top) * sy;
+      const { x, y } = viewport.screenToImage(screenX, screenY);
 
       if (phase === "point1") {
         setPoints([{ x, y }]);
@@ -102,7 +123,7 @@ export default function ReferenceMeasure({ imageDataUrl, onReferenceSet }: Props
         setPhase("input");
       }
     },
-    [phase, scale],
+    [phase, viewport],
   );
 
   const handleConfirm = () => {
@@ -112,9 +133,6 @@ export default function ReferenceMeasure({ imageDataUrl, onReferenceSet }: Props
     const dy = points[1].y - points[0].y;
     const pixelDist = Math.sqrt(dx * dx + dy * dy);
     const pixelsPerMeter = pixelDist / m;
-    // angleDeg kept in the data structure for diagnostic display only — the
-    // measurement assumes the photo is taken perpendicular to the wall, so
-    // no horizontal perspective correction is applied.
     const angleDeg = Math.atan2(dy, dx) * (180 / Math.PI);
     onReferenceSet({
       point1: points[0],
@@ -130,6 +148,7 @@ export default function ReferenceMeasure({ imageDataUrl, onReferenceSet }: Props
     setPoints([]);
     setMeters("");
     setPhase("idle");
+    viewport.reset();
   };
 
   return (
@@ -145,6 +164,10 @@ export default function ReferenceMeasure({ imageDataUrl, onReferenceSet }: Props
               <span className="block mt-1 text-xs text-slate-500">
                 Tarkin tulos saadaan <strong>vaakasuoralla</strong> viivalla (esim. sokkelin reuna).
                 Pystysuora viiva toimii myös, jos kuva on otettu suoraan edestä.
+              </span>
+              <span className="block mt-1 text-xs text-cyan-700">
+                Vinkki: Zoomaa lähemmäs nappia (+) tai sormillasi nipistämällä —
+                pisteet pysyvät tarkkoina ja ovat helpompia osua kohdalleen.
               </span>
             </span>
           )}
@@ -172,8 +195,24 @@ export default function ReferenceMeasure({ imageDataUrl, onReferenceSet }: Props
           width={canvasSize.w}
           height={canvasSize.h}
           onClick={handleCanvasClick}
-          className={`block w-full ${phase === "point1" || phase === "point2" ? "cursor-crosshair" : "cursor-default"}`}
+          {...viewport.eventProps}
+          className={`block w-full select-none ${
+            viewport.isPanning
+              ? "cursor-grabbing"
+              : phase === "point1" || phase === "point2"
+                ? "cursor-crosshair"
+                : viewport.zoom > 1
+                  ? "cursor-grab"
+                  : "cursor-default"
+          }`}
         />
+        {canvasSize.w > 0 && (
+          <ZoomControls
+            zoom={viewport.zoom}
+            zoomBy={viewport.zoomBy}
+            reset={viewport.reset}
+          />
+        )}
       </div>
 
       <div className="flex flex-wrap items-center gap-2">
