@@ -38,10 +38,15 @@ interface Props {
 
 type Phase = "drawing" | "done";
 
-/** Snap radius as a fraction of the image diagonal. 5% catches clicks
- *  that are a finger-width off on a phone while still being small
- *  enough that the snap target is unambiguous. */
-const SNAP_RADIUS_FRACTION = 0.05;
+/** Snap radii as a fraction of the image diagonal.
+ *
+ *  Corners get a much larger search radius (12%) than regular line
+ *  pixels (5%): a building corner is an unambiguous "anchor" the user
+ *  is clearly aiming at, so we want to forgive imprecise taps and still
+ *  catch the right point. Regular lines stay at a tighter radius so the
+ *  fallback doesn't yank the click toward a nearby unrelated edge. */
+const CORNER_SNAP_RADIUS_FRACTION = 0.12;
+const LINE_SNAP_RADIUS_FRACTION = 0.05;
 
 export default function PolygonSelect({
   imageUrl,
@@ -430,37 +435,44 @@ export default function PolygonSelect({
       kind: "corner" | "line" | null;
     } => {
       const diag = Math.hypot(imageWidth, imageHeight);
-      const radius = diag * SNAP_RADIUS_FRACTION;
+      const cornerRadius = diag * CORNER_SNAP_RADIUS_FRACTION;
+      const lineRadius = diag * LINE_SNAP_RADIUS_FRACTION;
       if (!snapEnabled || !lineMapRef.current) {
-        return { snapped: null, distPx: null, radius, kind: null };
+        return { snapped: null, distPx: null, radius: cornerRadius, kind: null };
       }
       const lm = lineMapRef.current;
       const lmScaleX = lm.width / imageWidth;
       const lmScaleY = lm.height / imageHeight;
 
-      // Stage 1 — corner
-      const corner = snapToNearestCorner(raw, lm, radius, lmScaleX, lmScaleY);
+      // Stage 1 — corner (wide net so off-target taps still snap home)
+      const corner = snapToNearestCorner(
+        raw,
+        lm,
+        cornerRadius,
+        lmScaleX,
+        lmScaleY,
+      );
       if (corner) {
         return {
           snapped: corner,
           distPx: Math.hypot(corner.x - raw.x, corner.y - raw.y),
-          radius,
+          radius: cornerRadius,
           kind: "corner",
         };
       }
 
-      // Stage 2 — line
-      const line = snapToNearestLine(raw, lm, radius, lmScaleX, lmScaleY);
+      // Stage 2 — generic line pixel (tighter)
+      const line = snapToNearestLine(raw, lm, lineRadius, lmScaleX, lmScaleY);
       if (line) {
         return {
           snapped: line,
           distPx: Math.hypot(line.x - raw.x, line.y - raw.y),
-          radius,
+          radius: lineRadius,
           kind: "line",
         };
       }
 
-      return { snapped: null, distPx: null, radius, kind: null };
+      return { snapped: null, distPx: null, radius: cornerRadius, kind: null };
     },
     [snapEnabled, imageWidth, imageHeight],
   );

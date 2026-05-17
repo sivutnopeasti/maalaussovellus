@@ -114,7 +114,11 @@ export function useCanvasViewport({
   const pinchStateRef = useRef<{
     startDist: number;
     startZoom: number;
-    centreCanvas: { x: number; y: number };
+    /** Pan at the moment the second finger went down. */
+    startPan: { x: number; y: number };
+    /** Midpoint of the two fingers, in canvas coords, at the moment
+     *  the second finger went down. */
+    startCentreCanvas: { x: number; y: number };
   } | null>(null);
   /** Used to suppress a click event right after a pan gesture, so a
    *  drag of the canvas doesn't place an unwanted point. */
@@ -299,12 +303,17 @@ export function useCanvasViewport({
         pinchStateRef.current = {
           startDist: Math.hypot(ca.x - cb.x, ca.y - cb.y),
           startZoom: zoomRef.current,
-          centreCanvas: {
+          startPan: { ...panRef.current },
+          startCentreCanvas: {
             x: (ca.x + cb.x) / 2,
             y: (ca.y + cb.y) / 2,
           },
         };
         dragStateRef.current = null;
+        // The very act of putting two fingers down counts as a gesture
+        // — suppress the next click so this two-finger tap doesn't
+        // place a point on release.
+        suppressNextClickRef.current = true;
       } else if (e.touches.length === 1) {
         const t = e.touches[0];
         const c = getCanvasPoint(e.currentTarget, t.clientX, t.clientY);
@@ -327,15 +336,35 @@ export function useCanvasViewport({
         const ca = getCanvasPoint(e.currentTarget, a.clientX, a.clientY);
         const cb = getCanvasPoint(e.currentTarget, b.clientX, b.clientY);
         const dist = Math.hypot(ca.x - cb.x, ca.y - cb.y);
-        if (pinchStateRef.current.startDist > 0) {
-          const factor = dist / pinchStateRef.current.startDist;
+        const currentCentre = {
+          x: (ca.x + cb.x) / 2,
+          y: (ca.y + cb.y) / 2,
+        };
+        const ps = pinchStateRef.current;
+        if (ps.startDist > 0) {
+          // Combined zoom + pan: keep the image point that was under
+          // the initial finger midpoint anchored to the current finger
+          // midpoint, while scaling by the finger-spread ratio. Lets
+          // the user slide the picture around with two fingers while
+          // zooming, just like the photos / maps app.
+          const factor = dist / ps.startDist;
           const targetZoom = clamp(
-            pinchStateRef.current.startZoom * factor,
+            ps.startZoom * factor,
             MIN_ZOOM,
             MAX_ZOOM,
           );
-          const relative = targetZoom / zoomRef.current;
-          zoomAt(relative, pinchStateRef.current.centreCanvas);
+          const ratio = targetZoom / ps.startZoom;
+          const newPanX =
+            currentCentre.x - ratio * (ps.startCentreCanvas.x - ps.startPan.x);
+          const newPanY =
+            currentCentre.y - ratio * (ps.startCentreCanvas.y - ps.startPan.y);
+          const maxPanX = Math.max(0, canvasW * (targetZoom - 1));
+          const maxPanY = Math.max(0, canvasH * (targetZoom - 1));
+          setZoom(targetZoom);
+          setPan({
+            x: clamp(newPanX, -maxPanX, 0),
+            y: clamp(newPanY, -maxPanY, 0),
+          });
         }
       } else if (e.touches.length === 1 && dragStateRef.current) {
         // Only pan when already zoomed in — otherwise we'd block native
