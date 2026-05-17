@@ -1,658 +1,598 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
-import { useRouter } from "next/navigation";
-import {
-  Building2,
-  ChevronRight,
-  CheckCircle2,
-  Loader2,
-  AlertCircle,
-  Sparkles,
-  Camera,
-  Trash2,
-} from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import dynamic from "next/dynamic";
+import { ArrowLeft, Check } from "lucide-react";
+
 import ReferenceMeasure from "@/components/ReferenceMeasure";
+import PolygonSelect from "@/components/PolygonSelect";
 import type {
-  ReferenceData,
   AnalysisSession,
   CaptureTilt,
+  PolygonData,
+  ReferenceData,
 } from "@/lib/types";
 import {
+  calculatePolygonMeasurement,
+  type PreciseMeasurementResult,
+} from "@/lib/measure";
+import {
+  addMeasurement,
+  clearProject,
+  clearStoredWallHeight,
+  estimateWallHeightM,
+  findReferenceVerticalEdge,
+  getProject,
   getStoredWallHeight,
   storeWallHeight,
-  clearStoredWallHeight,
-  getProject,
-  clearProject,
-  projectTotalM2,
-  type StoredWallHeight,
   type FacadeProject,
 } from "@/lib/wallHeight";
+
+import IntroScreen from "./_screens/IntroScreen";
+import InstructionModal from "./_screens/InstructionModal";
+import AnalysingScreen from "./_screens/AnalysingScreen";
+import BetweenWallsScreen from "./_screens/BetweenWallsScreen";
+import FinalSummaryScreen from "./_screens/FinalSummaryScreen";
 
 const CameraCapture = dynamic(() => import("@/components/CameraCapture"), {
   ssr: false,
 });
 
-type Step = "capture" | "reference" | "analysing";
-
 /**
- * Debug override. When `true`, every photo asks for a manual reference
- * line — even if a stored wall-corner height exists. Normally `false`:
- * subsequent walls reuse the auto-reference.
+ * Single-page Snapchat-style flow.
+ *
+ *   intro → camera → ref-intro → ref-draw → poly-intro → poly-draw →
+ *   analysing → between (or final)
+ *
+ * For walls 2+ a stored corner height auto-references the photo so the
+ * `ref-intro` and `ref-draw` steps are skipped. Every step is locked to
+ * the viewport (no scrolling) except the final summary.
  */
-const FORCE_MANUAL_REFERENCE = false;
+type Step =
+  | "intro"
+  | "camera"
+  | "ref-intro"
+  | "ref-draw"
+  | "poly-intro"
+  | "poly-draw"
+  | "analysing"
+  | "between"
+  | "final";
 
-/** Placeholder used when the user picks auto-mode: the real reference is
- *  computed on the result page from the polygon's vertical edges. */
-const PLACEHOLDER_REFERENCE: ReferenceData = {
-  point1: { x: 0, y: 0 },
-  point2: { x: 0, y: 0 },
-  meters: 0,
-  pixelsPerMeter: 0,
-  pixelDistance: 0,
-  angleDeg: 0,
+const ANALYSING_MESSAGES: Record<string, string> = {
+  upload: "Ladataan kuvaa pilveen...",
+  lines: "Tunnistetaan rakenteen reunoja...",
+  measure: "Lasketaan pinta-alaa...",
 };
 
 export default function HomePage() {
-  const router = useRouter();
-  const [step, setStep] = useState<Step>("capture");
+  const [step, setStep] = useState<Step>("intro");
+  const [project, setProject] = useState<FacadeProject | null>(null);
+  const [storedWallHeightM, setStoredWallHeightM] = useState<number | null>(null);
+  /** Latest fully-validated wall height — survives across photos in case
+   *  localStorage is blocked (e.g. iOS Safari private mode). */
+  const wallHeightRef = useRef<number | null>(null);
+
+  // ── Current photo state ───────────────────────────────────────────────────
   const [imageFile, setImageFile] = useState<File | null>(null);
   const [imageDataUrl, setImageDataUrl] = useState<string>("");
-  const [imageDimensions, setImageDimensions] = useState({ w: 0, h: 0 });
-  const [reference, setReference] = useState<ReferenceData | null>(null);
+  const [imageDims, setImageDims] = useState({ w: 0, h: 0 });
   const [captureTilt, setCaptureTilt] = useState<CaptureTilt | null>(null);
+  const [uploadedImageUrl, setUploadedImageUrl] = useState<string | null>(null);
+  const [mlsdMapUrl, setMlsdMapUrl] = useState<string | null>(null);
+  const [reference, setReference] = useState<ReferenceData | null>(null);
+  const [polygon, setPolygon] = useState<PolygonData | null>(null);
+  const [analysingMessage, setAnalysingMessage] = useState<string>(
+    ANALYSING_MESSAGES.upload,
+  );
   const [error, setError] = useState<string | null>(null);
-  const [storedWallHeight, setStoredWallHeight] =
-    useState<StoredWallHeight | null>(null);
-  const [project, setProject] = useState<FacadeProject | null>(null);
-  const [autoMode, setAutoMode] = useState(false);
-  const [cameraOpen, setCameraOpen] = useState(false);
-  const [introShown, setIntroShown] = useState(false);
-  /** In-memory fallback for the wall height carried by the `?wh=` URL
-   *  parameter. Used when iOS Safari (or private mode) refuses to
-   *  persist localStorage between navigations. */
-  const urlWallHeightRef = useRef<number | null>(null);
 
-  // Load persisted project + wall height on mount. The camera is NOT
-  // auto-opened: we always show the capture-step UI first so the user
-  // can see the auto-reference status (green/amber banner) before
-  // taking the next photo. This eliminates the long-standing confusion
-  // where the camera covered the diagnostic banner and the user couldn't
-  // tell why the app fell back to manual reference.
-  //
-  // We also accept a `wh` URL parameter as a fallback for browsers
-  // (notably iOS Safari) that may clear localStorage between page
-  // navigations or block storage access entirely. If present, it takes
-  // precedence and is re-persisted to localStorage for subsequent reads.
+  // ── Mount: restore project + stored wall height ───────────────────────────
   useEffect(() => {
-    let wh = getStoredWallHeight();
-
-    if (typeof window !== "undefined") {
-      const params = new URLSearchParams(window.location.search);
-      const whParam = params.get("wh");
-      if (whParam) {
-        const parsed = Number.parseFloat(whParam);
-        if (Number.isFinite(parsed) && parsed > 0) {
-          console.log("[home] wh from URL param =", parsed);
-          // Re-persist to localStorage so handleCameraCapture can read it
-          // synchronously after navigation. On Safari this can fail
-          // silently — that's OK because we ALSO keep an in-memory copy
-          // (urlWallHeightRef + React state) to drive the decision.
-          storeWallHeight(parsed);
-          urlWallHeightRef.current = parsed;
-          wh = { valueM: parsed, savedAt: Date.now() };
-
-          // Strip the query string so a reload doesn't keep reapplying it.
-          try {
-            window.history.replaceState({}, "", "/");
-          } catch {
-            /* noop */
-          }
-        }
-      }
-    }
-
-    setStoredWallHeight(wh);
     const proj = getProject();
     setProject(proj);
-    if (wh && !FORCE_MANUAL_REFERENCE) {
-      setAutoMode(true);
-      setReference(PLACEHOLDER_REFERENCE);
+    const wh = getStoredWallHeight();
+    if (wh) {
+      setStoredWallHeightM(wh.valueM);
+      wallHeightRef.current = wh.valueM;
     }
-    setIntroShown(true);
+  }, []);
+
+  // ── Helpers ───────────────────────────────────────────────────────────────
+  const resetCurrentPhoto = useCallback(() => {
+    setImageFile(null);
+    setImageDataUrl("");
+    setImageDims({ w: 0, h: 0 });
+    setCaptureTilt(null);
+    setUploadedImageUrl(null);
+    setMlsdMapUrl(null);
+    setReference(null);
+    setPolygon(null);
+    setError(null);
   }, []);
 
   const wallCount = project?.measurements.length ?? 0;
   const wallIndex = wallCount + 1;
-  const cameraTitle =
-    wallCount === 0 ? "Seinä 1 — pääty" : `Seinä ${wallIndex}`;
+  const autoMode = storedWallHeightM !== null && storedWallHeightM > 0;
 
-  const runAnalysis = async (
-    file: File,
-    dimensions: { w: number; h: number },
-    ref: ReferenceData,
-    tilt: CaptureTilt | null,
-    autoWallHeightM: number | undefined,
-  ) => {
-    setStep("analysing");
-    setError(null);
+  // ── 1. Intro → open camera ────────────────────────────────────────────────
+  const handleOpenCamera = useCallback(() => {
+    resetCurrentPhoto();
+    setStep("camera");
+  }, [resetCurrentPhoto]);
 
-    try {
-      const uploadForm = new FormData();
-      uploadForm.append("file", file);
-      const uploadRes = await fetch("/api/upload", {
-        method: "POST",
-        body: uploadForm,
-      });
-      if (!uploadRes.ok) throw new Error("Kuvan lataaminen epäonnistui.");
-      const { url: uploadedImageUrl } = await uploadRes.json();
-
-      const session: AnalysisSession = {
-        uploadedImageUrl,
-        imageWidth: dimensions.w,
-        imageHeight: dimensions.h,
-        reference: ref,
-        captureTilt: tilt ?? undefined,
-        autoWallHeightM,
-      };
-
-      sessionStorage.setItem("facadeSession", JSON.stringify(session));
-      router.push("/result");
-    } catch (err) {
-      console.error(err);
-      setError(err instanceof Error ? err.message : "Tuntematon virhe.");
-      setStep(autoWallHeightM ? "capture" : "reference");
-    }
-  };
-
-  const handleCameraCapture = (
-    file: File,
-    dataUrl: string,
-    tilt: CaptureTilt | null,
-  ) => {
-    setCameraOpen(false);
-    setImageFile(file);
-    setImageDataUrl(dataUrl);
-    setCaptureTilt(tilt);
-
-    // Read the stored wall height SYNCHRONOUSLY from localStorage rather
-    // than from React state. This avoids closure-staleness issues when the
-    // home page is re-mounted from the result page — the React state may
-    // still be `null` while the value already exists in localStorage.
-    //
-    // Three-tier resolution (each one a fallback for the previous):
-    //   1. localStorage (the primary path; works everywhere except some
-    //      iOS Safari private-mode / cross-navigation edge cases)
-    //   2. in-memory ref from the `?wh=` URL parameter at mount time
-    //      (covers iOS Safari and other browsers that drop storage)
-    //   3. React state captured at mount (last-resort)
-    let wh = getStoredWallHeight();
-    if (!wh && urlWallHeightRef.current) {
-      wh = { valueM: urlWallHeightRef.current, savedAt: Date.now() };
-      console.log("[capture] using urlWallHeightRef fallback", wh);
-    }
-    if (!wh && storedWallHeight) {
-      wh = storedWallHeight;
-      console.log("[capture] using React state fallback", wh);
-    }
-    console.log("[capture] handleCameraCapture", {
-      storedWallHeight: wh,
-      urlRef: urlWallHeightRef.current,
-      FORCE_MANUAL_REFERENCE,
-      willGoTo:
-        !FORCE_MANUAL_REFERENCE && wh && wh.valueM > 0
-          ? "auto-analysis"
-          : "manual reference",
-    });
-
-    const img = new Image();
-    img.onload = () => {
-      const dims = { w: img.width, h: img.height };
-      setImageDimensions(dims);
-
-      if (!FORCE_MANUAL_REFERENCE && wh && wh.valueM > 0) {
-        // Auto-mode: known wall corner height → skip the manual reference
-        // line step and analyse straight away.
-        setReference(PLACEHOLDER_REFERENCE);
-        void runAnalysis(file, dims, PLACEHOLDER_REFERENCE, tilt, wh.valueM);
-      } else {
-        setReference(null);
-        setStep("reference");
-      }
-    };
-    img.src = dataUrl;
-  };
-
-  const handleReferenceSet = (data: ReferenceData) => {
-    setReference(data);
-  };
-
-  const handleClearProject = () => {
+  const handleClearAll = useCallback(() => {
     clearProject();
     clearStoredWallHeight();
     setProject(null);
-    setStoredWallHeight(null);
-    setAutoMode(false);
-    setReference(null);
-    setImageFile(null);
-    setImageDataUrl("");
-    setStep("capture");
-  };
+    setStoredWallHeightM(null);
+    wallHeightRef.current = null;
+    resetCurrentPhoto();
+    setStep("intro");
+  }, [resetCurrentPhoto]);
 
-  const handleAnalyse = () => {
-    if (!imageFile || !reference) return;
-    // Manual reference path → never carry an autoWallHeightM
-    void runAnalysis(imageFile, imageDimensions, reference, captureTilt, undefined);
-  };
+  // ── 2. Camera → capture done → ref-intro OR poly-intro (auto) ────────────
+  const handleCaptured = useCallback(
+    (file: File, dataUrl: string, tilt: CaptureTilt | null) => {
+      setImageFile(file);
+      setImageDataUrl(dataUrl);
+      setCaptureTilt(tilt);
 
-  const STEPS = [
-    { key: "capture", label: "Ota kuva" },
-    { key: "reference", label: "Referenssi" },
-    { key: "analysing", label: "Analyysi" },
-  ] as const;
+      const img = new Image();
+      img.onload = () => {
+        setImageDims({ w: img.width, h: img.height });
+        const wh = wallHeightRef.current ?? storedWallHeightM;
+        if (wh && wh > 0) {
+          // Auto-mode: skip the reference step entirely
+          setStep("poly-intro");
+        } else {
+          setStep("ref-intro");
+        }
+      };
+      img.src = dataUrl;
+    },
+    [storedWallHeightM],
+  );
 
-  const totalArea = projectTotalM2(project);
+  const handleCancelCamera = useCallback(() => {
+    setStep(wallCount > 0 ? "between" : "intro");
+  }, [wallCount]);
+
+  // ── 3. Reference intro → ref-draw ────────────────────────────────────────
+  const handleReferenceIntroDone = useCallback(() => setStep("ref-draw"), []);
+
+  // ── 4. Reference set → poly-intro ────────────────────────────────────────
+  const handleReferenceSet = useCallback((data: ReferenceData) => {
+    setReference(data);
+  }, []);
+
+  const handleReferenceConfirm = useCallback(() => {
+    if (!reference || reference.pixelsPerMeter <= 0) return;
+    setStep("poly-intro");
+  }, [reference]);
+
+  // ── 5. Polygon intro → poly-draw (kick off upload + MLSD in parallel) ────
+  const handlePolygonIntroDone = useCallback(async () => {
+    if (!imageFile) return;
+    setStep("poly-draw");
+
+    // Upload + MLSD run in the background while the user is placing
+    // their first corner. By the time they finish drawing (typically
+    // 20-30 s), both should be ready.
+    if (!uploadedImageUrl) {
+      try {
+        const fd = new FormData();
+        fd.append("file", imageFile);
+        const res = await fetch("/api/upload", { method: "POST", body: fd });
+        if (res.ok) {
+          const { url } = await res.json();
+          setUploadedImageUrl(url);
+          void (async () => {
+            try {
+              const r = await fetch("/api/lines", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ imageUrl: url }),
+              });
+              if (r.ok) {
+                const { url: mlsdUrl } = await r.json();
+                if (mlsdUrl) setMlsdMapUrl(mlsdUrl);
+              }
+            } catch {
+              /* snap is non-essential */
+            }
+          })();
+        }
+      } catch {
+        /* upload errors surface in the analysing step instead */
+      }
+    }
+  }, [imageFile, uploadedImageUrl]);
+
+  // ── 6. Polygon drawn → analyse ───────────────────────────────────────────
+  const handlePolygonSet = useCallback(
+    async (data: PolygonData) => {
+      setPolygon(data);
+      setStep("analysing");
+      setAnalysingMessage(ANALYSING_MESSAGES.measure);
+      setError(null);
+
+      try {
+        // Ensure we have an uploaded URL (in case the user drew faster
+        // than the upload completed).
+        let imgUrl = uploadedImageUrl;
+        if (!imgUrl && imageFile) {
+          setAnalysingMessage(ANALYSING_MESSAGES.upload);
+          const fd = new FormData();
+          fd.append("file", imageFile);
+          const res = await fetch("/api/upload", { method: "POST", body: fd });
+          if (!res.ok) throw new Error("Kuvan lataaminen epäonnistui.");
+          const { url } = await res.json();
+          imgUrl = url;
+          setUploadedImageUrl(url);
+        }
+
+        // Resolve the reference data
+        const wh = wallHeightRef.current ?? storedWallHeightM;
+        let activeReference: ReferenceData;
+        if ((!reference || reference.pixelsPerMeter <= 0) && wh && wh > 0) {
+          const edge = findReferenceVerticalEdge(data.points);
+          if (!edge) {
+            throw new Error(
+              "Polygonissa ei ole pystysuoraa nurkkaa josta mittakaava saataisiin. Piirrä polygoni siten että ainakin yksi pystysuora reuna on mukana.",
+            );
+          }
+          activeReference = {
+            point1: edge.p1,
+            point2: edge.p2,
+            meters: wh,
+            pixelDistance: edge.pixelLength,
+            pixelsPerMeter: edge.pixelLength / wh,
+            angleDeg: 90,
+          };
+        } else if (reference && reference.pixelsPerMeter > 0) {
+          activeReference = reference;
+        } else {
+          throw new Error("Referenssitietoa ei löytynyt.");
+        }
+
+        setAnalysingMessage(ANALYSING_MESSAGES.measure);
+        const result = await calculatePolygonMeasurement(
+          data.points,
+          [],
+          imageDims.w,
+          imageDims.h,
+          activeReference,
+          {
+            useKeystoneCorrection: true,
+            sensorTiltBetaDeg: captureTilt?.cameraTiltDeg ?? null,
+          },
+        );
+
+        // Persist into the project + remember the wall height for next photo
+        const updated = addMeasurement(result.wallAreaM2);
+        setProject(updated);
+
+        const newWh = estimateWallHeightM(
+          data.points,
+          activeReference.pixelsPerMeter,
+        );
+        if (newWh !== null && newWh > 1 && newWh < 25) {
+          storeWallHeight(newWh);
+          setStoredWallHeightM(newWh);
+          wallHeightRef.current = newWh;
+        }
+
+        // Cache the analysed session in sessionStorage purely for any
+        // post-hoc inspection (e.g. opening /result manually). The new
+        // flow doesn't navigate there.
+        const session: AnalysisSession = {
+          uploadedImageUrl: imgUrl!,
+          imageWidth: imageDims.w,
+          imageHeight: imageDims.h,
+          reference: activeReference,
+          captureTilt: captureTilt ?? undefined,
+          autoWallHeightM: wh ?? undefined,
+          polygon: data,
+        };
+        try {
+          sessionStorage.setItem("facadeSession", JSON.stringify(session));
+        } catch {
+          /* private mode — ignore */
+        }
+
+        setStep("between");
+      } catch (err) {
+        const msg =
+          err instanceof Error ? err.message : "Laskenta epäonnistui.";
+        setError(msg);
+        setStep("poly-draw");
+      }
+    },
+    [
+      uploadedImageUrl,
+      imageFile,
+      imageDims,
+      reference,
+      captureTilt,
+      storedWallHeightM,
+    ],
+  );
+
+  // ── 7. Between → next wall (re-open camera) or final ─────────────────────
+  const handleNextWall = useCallback(() => {
+    resetCurrentPhoto();
+    setStep("camera");
+  }, [resetCurrentPhoto]);
+
+  const handleFinish = useCallback(() => setStep("final"), []);
+
+  // Used by the "back" button on individual steps (e.g. polygon)
+  const handleBackToCamera = useCallback(() => {
+    resetCurrentPhoto();
+    setStep("camera");
+  }, [resetCurrentPhoto]);
+
+  // ── Bound the visible area & lock scrolling per-step ─────────────────────
+  const allowScroll = step === "final";
+  const lastMeasurement = project?.measurements[project.measurements.length - 1];
 
   return (
-    <div className="min-h-screen flex flex-col">
-      {/* Header */}
-      <header className="bg-white border-b border-slate-200 px-4 py-4">
-        <div className="max-w-3xl mx-auto flex items-center gap-3">
-          <div className="p-2 bg-blue-600 rounded-lg">
-            <Building2 className="w-5 h-5 text-white" />
-          </div>
-          <div className="flex-1">
-            <h1 className="font-bold text-slate-900 leading-tight">
-              Julkisivutyökalu
-            </h1>
-            <p className="text-xs text-slate-500">
-              {project && wallCount > 0
-                ? `Mitattu ${wallCount} seinää · yhteensä ${totalArea.toFixed(1)} m²`
-                : "Maalausliike — neliömetrilaskenta"}
-            </p>
-          </div>
-          {project && wallCount > 0 && (
-            <button
-              onClick={handleClearProject}
-              className="p-2 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-colors"
-              title="Aloita uusi projekti"
-            >
-              <Trash2 className="w-4 h-4" />
-            </button>
-          )}
-        </div>
-        {/* Step indicator */}
-        <div className="max-w-3xl mx-auto mt-4 flex items-center gap-1 flex-wrap text-xs">
-          {STEPS.map((s, i) => {
-            const sIdx = STEPS.findIndex((t) => t.key === step);
-            const tIdx = STEPS.findIndex((t) => t.key === s.key);
-            const done = tIdx < sIdx;
-            const active = tIdx === sIdx;
-            return (
-              <div key={s.key} className="flex items-center gap-2">
-                {i > 0 && <ChevronRight className="w-4 h-4 text-slate-300 shrink-0" />}
-                <div
-                  className={`flex items-center gap-1.5 text-sm font-medium px-3 py-1 rounded-full transition-colors ${
-                    done
-                      ? "bg-green-100 text-green-700"
-                      : active
-                        ? "bg-blue-600 text-white"
-                        : "text-slate-400"
-                  }`}
-                >
-                  {done && <CheckCircle2 className="w-3.5 h-3.5" />}
-                  {active && s.key === "analysing" && (
-                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                  )}
-                  {s.label}
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      </header>
+    <div
+      className="relative w-full h-full overflow-hidden"
+      data-scroll={allowScroll ? "true" : "false"}
+    >
+      {/* ── 1. INTRO ─────────────────────────────────────────────────────── */}
+      {step === "intro" && (
+        <IntroScreen
+          project={project}
+          onOpenCamera={handleOpenCamera}
+          onClearProject={handleClearAll}
+        />
+      )}
 
-      {/* Main content */}
-      <main className="flex-1 px-4 py-6">
-        <div className="max-w-3xl mx-auto space-y-6">
-          {error && (
-            <div className="flex items-start gap-3 p-4 bg-red-50 border border-red-200 rounded-xl text-sm text-red-700">
-              <AlertCircle className="w-5 h-5 shrink-0 mt-0.5" />
-              <div>
-                <p className="font-medium">Virhe</p>
-                <p>{error}</p>
-              </div>
-            </div>
-          )}
-
-          {/* Step 1 — Capture (no upload, only camera) */}
-          {step === "capture" && introShown && (
-            <section className="bg-white rounded-2xl border border-slate-200 p-6 space-y-5 shadow-sm">
-              <div className="text-center space-y-3">
-                <div className="mx-auto w-16 h-16 bg-blue-100 rounded-full flex items-center justify-center">
-                  <Camera className="w-8 h-8 text-blue-600" />
-                </div>
-                <div>
-                  <h2 className="text-lg font-bold text-slate-900">
-                    {wallCount === 0
-                      ? "Aloita pääätyseinästä"
-                      : `Seinä ${wallIndex} / ${wallCount + 1}+`}
-                  </h2>
-                  <p className="text-sm text-slate-500 mt-1">
-                    {wallCount === 0
-                      ? "Ota ensimmäinen kuva päätyseinästä (lyhyt sivu). Sovellus ohjaa läpi: kuva → referenssi → rajaus → seuraava seinä."
-                      : "Ota nyt kuva seuraavasta seinästä. Sovellus käyttää aiempaa nurkkakorkeutta automaattisesti — ei tarvitse uutta referenssimittausta."}
-                  </p>
-                </div>
-              </div>
-
-              {/* Project status if multi-photo */}
-              {project && wallCount > 0 && (
-                <div className="p-4 bg-indigo-50 border border-indigo-200 rounded-xl space-y-2">
-                  <p className="text-xs font-semibold text-indigo-800 uppercase tracking-wide">
-                    Tämä projekti
-                  </p>
-                  <ul className="space-y-1">
-                    {project.measurements.map((m, idx) => (
-                      <li
-                        key={idx}
-                        className="flex items-center justify-between text-sm text-indigo-700"
-                      >
-                        <span>
-                          <CheckCircle2 className="w-3.5 h-3.5 inline mr-1.5 text-green-600" />
-                          {m.label}
-                        </span>
-                        <span className="font-mono">
-                          {m.areaM2.toFixed(2)} m²
-                        </span>
-                      </li>
-                    ))}
-                    <li className="flex items-center justify-between text-sm font-bold text-indigo-900 border-t border-indigo-200 pt-1.5">
-                      <span>Yhteensä</span>
-                      <span className="font-mono">
-                        {totalArea.toFixed(2)} m²
-                      </span>
-                    </li>
-                  </ul>
-                </div>
-              )}
-
-              {/* Auto-reference status — always shown after the first wall.
-                  Green if a stored corner height is available (next photo
-                  will analyse automatically); amber if not (manual ref
-                  required). */}
-              {wallCount > 0 &&
-                (storedWallHeight ? (
-                  <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-xl text-sm flex items-start gap-2">
-                    <Sparkles className="w-4 h-4 shrink-0 mt-0.5 text-emerald-600" />
-                    <div className="text-emerald-800">
-                      <strong>Auto-referenssi aktiivinen.</strong>{" "}
-                      Tallennettu nurkkakorkeus{" "}
-                      <strong>{storedWallHeight.valueM.toFixed(2)} m</strong>{" "}
-                      — seuraava kuva analysoidaan suoraan ilman
-                      referenssimittausta.
-                    </div>
-                  </div>
-                ) : (
-                  <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl text-sm space-y-2">
-                    <div className="flex items-start gap-2">
-                      <AlertCircle className="w-4 h-4 shrink-0 mt-0.5 text-amber-600" />
-                      <div className="text-amber-800">
-                        <strong>Auto-referenssi ei käytössä.</strong>{" "}
-                        Nurkkakorkeutta ei voitu tallentaa edellisestä
-                        mittauksesta — tähän kuvaan tarvitaan oma
-                        referenssimitta.
-                      </div>
-                    </div>
-                    <details className="text-[10px] font-mono text-amber-700/80 pl-6">
-                      <summary className="cursor-pointer hover:text-amber-900">
-                        Diagnostiikka
-                      </summary>
-                      <pre className="mt-1 p-2 bg-white/50 rounded overflow-x-auto whitespace-pre-wrap break-all">
-                        {JSON.stringify(
-                          {
-                            urlRef: urlWallHeightRef.current,
-                            localStorage:
-                              typeof window !== "undefined"
-                                ? localStorage.getItem(
-                                    "facadeStoredWallHeight",
-                                  )
-                                : null,
-                            sessionStorage:
-                              typeof window !== "undefined"
-                                ? sessionStorage.getItem("facadeSession")
-                                    ?.slice(0, 80) ?? null
-                                : null,
-                            project: project
-                              ? { walls: project.measurements.length }
-                              : null,
-                          },
-                          null,
-                          2,
-                        )}
-                      </pre>
-                    </details>
-                  </div>
-                ))}
-
-              <div className="p-4 bg-slate-50 border border-slate-200 rounded-xl space-y-1 text-sm text-slate-600">
-                <p className="font-semibold text-slate-800">Kuvausohjeet</p>
-                <ul className="space-y-1 list-disc pl-5 text-xs">
-                  <li>
-                    Asetu kohtisuoraan seinään nähden, sen <strong>keskikohdalle</strong>.
-                  </li>
-                  <li>
-                    Astu tarpeeksi kauas niin että <strong>koko seinä</strong>{" "}
-                    mahtuu kuvaan harjaa myöten.
-                  </li>
-                  <li>
-                    Vesivaaka ohjaa: <strong>vihreä viiva</strong> = puhelin
-                    suorassa = ota kuva.
-                  </li>
-                </ul>
-              </div>
-
-              <button
-                onClick={() => setCameraOpen(true)}
-                className="w-full flex items-center justify-center gap-2 py-4 bg-blue-600 hover:bg-blue-700 text-white text-base font-semibold rounded-2xl shadow-lg shadow-blue-200 transition-colors"
-              >
-                <Camera className="w-5 h-5" />
-                {wallCount === 0
-                  ? "Avaa kamera"
-                  : `Ota kuva seinästä ${wallIndex}`}
-              </button>
-            </section>
-          )}
-
-          {/* Step 2 — Reference (manual or auto) */}
-          {step === "reference" && imageDataUrl && (
-            <section className="bg-white rounded-2xl border border-slate-200 p-6 space-y-4 shadow-sm">
-              <div className="flex items-center gap-2">
-                <div
-                  className={`w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold ${
-                    reference && (autoMode || reference.pixelsPerMeter > 0)
-                      ? "bg-green-100 text-green-700"
-                      : "bg-blue-600 text-white"
-                  }`}
-                >
-                  {reference && (autoMode || reference.pixelsPerMeter > 0) ? (
-                    <CheckCircle2 className="w-4 h-4" />
-                  ) : (
-                    "2"
-                  )}
-                </div>
-                <h2 className="font-semibold text-slate-800">
-                  {autoMode
-                    ? "Referenssi (automaattinen)"
-                    : "Aseta referenssimitta"}
-                </h2>
-              </div>
-
-              {/* SAFETY NET: jos käyttäjä päätyi tähän vaiheessa mutta
-                  localStoragessa ON tallennettu nurkkakorkeus, näytä
-                  ISO nappi jolla voi ohittaa manuaalisen referenssin. */}
-              {!autoMode && storedWallHeight && imageFile && (
-                <div className="p-4 bg-emerald-50 border-2 border-emerald-300 rounded-xl space-y-3">
-                  <div className="flex items-start gap-2 text-sm text-emerald-900">
-                    <Sparkles className="w-5 h-5 shrink-0 mt-0.5 text-emerald-600" />
-                    <div>
-                      <p className="font-semibold">
-                        Tallennettu nurkkakorkeus:{" "}
-                        {storedWallHeight.valueM.toFixed(2)} m
-                      </p>
-                      <p className="text-xs mt-0.5">
-                        Voit ohittaa referenssimittauksen ja siirtyä suoraan
-                        polygonin piirtämiseen — sovellus käyttää tallennettua
-                        arvoa.
-                      </p>
-                    </div>
-                  </div>
-                  <button
-                    onClick={() => {
-                      console.log("[capture] manual override → auto-mode", {
-                        storedWallHeight,
-                      });
-                      void runAnalysis(
-                        imageFile,
-                        imageDimensions,
-                        PLACEHOLDER_REFERENCE,
-                        captureTilt,
-                        storedWallHeight.valueM,
-                      );
-                    }}
-                    className="w-full flex items-center justify-center gap-2 py-3 bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-bold rounded-xl shadow"
-                  >
-                    <Sparkles className="w-4 h-4" />
-                    Käytä tallennettua nurkkakorkeutta ja jatka
-                    <ChevronRight className="w-4 h-4" />
-                  </button>
-                </div>
-              )}
-
-              {autoMode ? (
-                <div className="p-4 bg-green-50 border border-green-200 rounded-xl space-y-2">
-                  <div className="flex items-start gap-2 text-sm text-green-800">
-                    <Sparkles className="w-4 h-4 shrink-0 mt-0.5" />
-                    <span>
-                      <strong>Käytetään tallennettua nurkkakorkeutta{" "}
-                      {storedWallHeight?.valueM.toFixed(2)} m.</strong>{" "}
-                      Skaalaus johdetaan polygonin pystyreunoista — voit jatkaa
-                      suoraan analysointiin.
-                    </span>
-                  </div>
-                  <button
-                    onClick={() => {
-                      setAutoMode(false);
-                      setReference(null);
-                    }}
-                    className="text-xs text-green-700 underline hover:text-green-800"
-                  >
-                    Vaihda manuaaliseen referenssimittaukseen
-                  </button>
-                </div>
-              ) : (
-                <>
-                  <p className="text-sm text-slate-500">
-                    Piirrä viiva pitkin <strong>tunnetun mittaista</strong>{" "}
-                    rakennetta — esim. ulko-oven leveys (0,9 m), korkeus (2,0 m)
-                    tai sokkelin reuna. Viiva antaa mittakaavan koko kuvalle.
-                  </p>
-                  <ReferenceMeasure
-                    imageDataUrl={imageDataUrl}
-                    onReferenceSet={handleReferenceSet}
-                  />
-                  {reference && reference.pixelsPerMeter > 0 && (
-                    <div className="flex items-center gap-2 p-3 bg-green-50 rounded-xl border border-green-200 text-sm text-green-700">
-                      <CheckCircle2 className="w-4 h-4 shrink-0" />
-                      <span>
-                        Referenssimitta asetettu:{" "}
-                        <strong>{reference.meters} m</strong> ={" "}
-                        <strong>
-                          {reference.pixelDistance.toFixed(0)} pikseliä
-                        </strong>{" "}
-                        — {reference.pixelsPerMeter.toFixed(1)} px/m
-                      </span>
-                    </div>
-                  )}
-                </>
-              )}
-
-              {/* DEBUG: localStorage state — temporary, helps user
-                  identify why auto-reference may not be active. */}
-              <details className="text-[10px] font-mono text-slate-400">
-                <summary className="cursor-pointer hover:text-slate-600">
-                  Debug-tieto
-                </summary>
-                <pre className="mt-2 p-2 bg-slate-50 rounded overflow-x-auto">
-                  {JSON.stringify(
-                    {
-                      step,
-                      autoMode,
-                      storedWallHeight,
-                      reference: reference
-                        ? {
-                            meters: reference.meters,
-                            pixelsPerMeter: reference.pixelsPerMeter.toFixed(1),
-                          }
-                        : null,
-                      project: project
-                        ? { walls: project.measurements.length }
-                        : null,
-                    },
-                    null,
-                    2,
-                  )}
-                </pre>
-              </details>
-            </section>
-          )}
-
-          {/* Analyse button */}
-          {step === "reference" && reference && (
-            <button
-              onClick={handleAnalyse}
-              className="w-full flex items-center justify-center gap-2 py-4 bg-blue-600 hover:bg-blue-700 text-white text-base font-semibold rounded-2xl shadow-lg shadow-blue-200 transition-colors"
-            >
-              {autoMode ? "Jatka rajaukseen" : "Analysoi kuva"}
-              <ChevronRight className="w-5 h-5" />
-            </button>
-          )}
-
-          {/* Loading state */}
-          {step === "analysing" && (
-            <section className="bg-white rounded-2xl border border-slate-200 p-10 flex flex-col items-center gap-4 shadow-sm">
-              <div className="p-4 bg-blue-50 rounded-full">
-                <Loader2 className="w-8 h-8 text-blue-600 animate-spin" />
-              </div>
-              <div className="text-center space-y-1">
-                <p className="font-semibold text-slate-800">Ladataan kuvaa...</p>
-                <p className="text-sm text-slate-500">
-                  Vie kuvan pilveen ja siirtää sinut rajaukseen muutamassa
-                  sekunnissa.
-                </p>
-              </div>
-              <div className="w-full max-w-xs bg-slate-100 rounded-full h-1.5 overflow-hidden">
-                <div className="h-full bg-blue-500 rounded-full animate-pulse w-3/4" />
-              </div>
-            </section>
-          )}
-        </div>
-      </main>
-
-      {/* Camera modal */}
-      {cameraOpen && (
+      {/* ── 2. CAMERA — fullscreen overlay ───────────────────────────────── */}
+      {step === "camera" && (
         <CameraCapture
-          onCapture={handleCameraCapture}
-          onClose={() => setCameraOpen(false)}
-          title={cameraTitle}
+          onCapture={handleCaptured}
+          onClose={handleCancelCamera}
+          title={
+            wallCount === 0
+              ? "Seinä 1 — pääty"
+              : `Seinä ${wallIndex}${autoMode ? " — automaattinen" : ""}`
+          }
           hint={
             wallCount === 0
-              ? "Asetu päätyseinän eteen ja pidä puhelin suorassa."
-              : `Ota kuva seinästä ${wallIndex} kohtisuoraan keskikohdasta.`
+              ? "Aloita päätyseinästä. Pidä puhelin suorassa."
+              : autoMode
+                ? "Sovellus käyttää tallennettua nurkkakorkeutta."
+                : "Asetu kohtisuoraan seinään nähden."
           }
         />
       )}
+
+      {/* ── 3. REFERENCE INTRO ───────────────────────────────────────────── */}
+      {step === "ref-intro" && (
+        <>
+          <PhotoBackground dataUrl={imageDataUrl} />
+          <InstructionModal
+            kind="reference"
+            onContinue={handleReferenceIntroDone}
+          />
+        </>
+      )}
+
+      {/* ── 4. REFERENCE DRAW ────────────────────────────────────────────── */}
+      {step === "ref-draw" && imageDataUrl && (
+        <ReferenceDrawScreen
+          imageDataUrl={imageDataUrl}
+          reference={reference}
+          onReferenceSet={handleReferenceSet}
+          onConfirm={handleReferenceConfirm}
+          onBack={handleBackToCamera}
+        />
+      )}
+
+      {/* ── 5. POLYGON INTRO ─────────────────────────────────────────────── */}
+      {step === "poly-intro" && (
+        <>
+          <PhotoBackground dataUrl={imageDataUrl} />
+          <InstructionModal
+            kind="polygon"
+            onContinue={handlePolygonIntroDone}
+            autoMode={autoMode}
+          />
+        </>
+      )}
+
+      {/* ── 6. POLYGON DRAW ──────────────────────────────────────────────── */}
+      {step === "poly-draw" && (
+        <PolygonDrawScreen
+          imageDataUrl={imageDataUrl}
+          imageDims={imageDims}
+          mlsdMapUrl={mlsdMapUrl}
+          reference={reference ?? undefined}
+          autoWallHeightM={
+            reference && reference.pixelsPerMeter > 0
+              ? undefined
+              : (storedWallHeightM ?? undefined)
+          }
+          onPolygonSet={handlePolygonSet}
+          onBack={handleBackToCamera}
+          error={error}
+        />
+      )}
+
+      {/* ── 7. ANALYSING ─────────────────────────────────────────────────── */}
+      {step === "analysing" && <AnalysingScreen message={analysingMessage} />}
+
+      {/* ── 8. BETWEEN WALLS ─────────────────────────────────────────────── */}
+      {step === "between" && project && lastMeasurement && (
+        <BetweenWallsScreen
+          project={project}
+          storedWallHeightM={storedWallHeightM}
+          onNextWall={handleNextWall}
+          onFinish={handleFinish}
+        />
+      )}
+
+      {/* ── 9. FINAL SUMMARY ─────────────────────────────────────────────── */}
+      {step === "final" && project && (
+        <FinalSummaryScreen
+          project={project}
+          onBack={() => setStep("between")}
+          onStartOver={handleClearAll}
+        />
+      )}
+    </div>
+  );
+}
+
+// ── Sub-screens (kept here because they share the page's state shape) ──────
+
+function PhotoBackground({ dataUrl }: { dataUrl: string }) {
+  if (!dataUrl) return null;
+  return (
+    <div className="absolute inset-0 bg-slate-900">
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img
+        src={dataUrl}
+        alt=""
+        className="absolute inset-0 w-full h-full object-cover opacity-60"
+      />
+    </div>
+  );
+}
+
+// ─── Reference draw ─────────────────────────────────────────────────────────
+
+interface ReferenceDrawProps {
+  imageDataUrl: string;
+  reference: ReferenceData | null;
+  onReferenceSet: (data: ReferenceData) => void;
+  onConfirm: () => void;
+  onBack: () => void;
+}
+
+function ReferenceDrawScreen({
+  imageDataUrl,
+  reference,
+  onReferenceSet,
+  onConfirm,
+  onBack,
+}: ReferenceDrawProps) {
+  const canConfirm = !!reference && reference.pixelsPerMeter > 0;
+  return (
+    <div className="absolute inset-0 flex flex-col bg-white">
+      <header className="px-3 py-2.5 border-b border-slate-200 flex items-center gap-2 shrink-0">
+        <button
+          onClick={onBack}
+          className="p-1.5 rounded-lg hover:bg-slate-100"
+          aria-label="Takaisin"
+        >
+          <ArrowLeft className="w-5 h-5 text-slate-600" />
+        </button>
+        <div className="flex-1 min-w-0">
+          <p className="font-semibold text-sm text-slate-900 leading-tight">
+            Piirrä referenssimitta
+          </p>
+          <p className="text-[11px] text-slate-500 truncate">
+            Esim. oven leveys 0,9 m
+          </p>
+        </div>
+        <span className="text-[10px] uppercase tracking-wide bg-blue-100 text-blue-700 font-bold px-2 py-0.5 rounded-full">
+          2 / 3
+        </span>
+      </header>
+
+      <div className="flex-1 min-h-0 overflow-hidden p-3">
+        <ReferenceMeasure
+          imageDataUrl={imageDataUrl}
+          onReferenceSet={onReferenceSet}
+        />
+      </div>
+
+      <div className="px-3 pb-3 pt-2 border-t border-slate-200 shrink-0">
+        <button
+          onClick={onConfirm}
+          disabled={!canConfirm}
+          className="w-full py-3 rounded-2xl bg-blue-600 disabled:bg-slate-300 text-white font-bold text-base shadow-lg shadow-blue-200 flex items-center justify-center gap-2 active:scale-[0.98]"
+        >
+          <Check className="w-5 h-5" />
+          {canConfirm
+            ? `Hyvä — referenssi ${reference!.meters} m vahvistettu`
+            : "Piirrä viiva ja anna mitta"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ─── Polygon draw ───────────────────────────────────────────────────────────
+
+interface PolygonDrawProps {
+  imageDataUrl: string;
+  imageDims: { w: number; h: number };
+  mlsdMapUrl: string | null;
+  reference?: ReferenceData;
+  autoWallHeightM?: number;
+  onPolygonSet: (data: PolygonData) => void;
+  onBack: () => void;
+  error: string | null;
+}
+
+function PolygonDrawScreen({
+  imageDataUrl,
+  imageDims,
+  mlsdMapUrl,
+  reference,
+  autoWallHeightM,
+  onPolygonSet,
+  onBack,
+  error,
+}: PolygonDrawProps) {
+  return (
+    <div className="absolute inset-0 flex flex-col bg-white">
+      <header className="px-3 py-2.5 border-b border-slate-200 flex items-center gap-2 shrink-0">
+        <button
+          onClick={onBack}
+          className="p-1.5 rounded-lg hover:bg-slate-100"
+          aria-label="Takaisin"
+        >
+          <ArrowLeft className="w-5 h-5 text-slate-600" />
+        </button>
+        <div className="flex-1 min-w-0">
+          <p className="font-semibold text-sm text-slate-900 leading-tight">
+            Rajaa maalattava alue
+          </p>
+          <p className="text-[11px] text-slate-500 truncate">
+            Klikkaa nurkat järjestyksessä — paina <strong>Valmis</strong> kun valmis
+          </p>
+        </div>
+        <span className="text-[10px] uppercase tracking-wide bg-blue-100 text-blue-700 font-bold px-2 py-0.5 rounded-full">
+          3 / 3
+        </span>
+      </header>
+
+      {error && (
+        <div className="mx-3 mt-2 px-3 py-2 rounded-xl bg-red-50 border border-red-200 text-xs text-red-700 shrink-0">
+          {error}
+        </div>
+      )}
+
+      <div className="flex-1 min-h-0 overflow-hidden p-3">
+        {imageDataUrl && imageDims.w > 0 && (
+          <PolygonSelect
+            imageUrl={imageDataUrl}
+            imageWidth={imageDims.w}
+            imageHeight={imageDims.h}
+            onPolygonSet={onPolygonSet}
+            reference={reference}
+            autoWallHeightM={autoWallHeightM}
+            mlsdMapUrl={mlsdMapUrl ?? undefined}
+          />
+        )}
+      </div>
     </div>
   );
 }

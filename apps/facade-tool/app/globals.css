@@ -4,6 +4,91 @@
   --font-sans: var(--font-geist-sans);
 }
 
+html,
 body {
   font-family: var(--font-geist-sans), Arial, Helvetica, sans-serif;
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  width: 100%;
+  overscroll-behavior: none;
+}
+
+/* Mobile-sized centred frame. On phones it fills the screen; on
+ * desktop it caps at 480px so the layout always looks like a phone. */
+.app-frame {
+  width: 100%;
+  max-width: 480px;
+  margin: 0 auto;
+  height: 100dvh;
+  min-height: 100dvh;
+  background: white;
+  position: relative;
+  overflow: hidden;
+  box-shadow: 0 0 30px rgba(15, 23, 42, 0.18);
+}
+
+/* The page sets data-scroll="true" on its main element only when the
+ * step actually needs vertical scrolling (e.g. the final summary). All
+ * other steps stay completely locked. */
+[data-scroll="true"] {
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+}
+[data-scroll="false"] {
+  overflow: hidden;
+  touch-action: pan-x pinch-zoom;
+}
+
+/* iOS Safari zooms in on inputs whose computed font-size is < 16px.
+ * That zoom is irritating and breaks our viewport lock — force every
+ * form control to render at >= 16px on touch screens. */
+@media (pointer: coarse) {
+  input,
+  textarea,
+  select {
+    font-size: 16px !important;
+  }
+}
+
+/* SVG instruction-animation keyframes — used by the modal screens. */
+@keyframes draw-line {
+  0%,
+  10% {
+    stroke-dashoffset: var(--len, 200);
+  }
+  60%,
+  100% {
+    stroke-dashoffset: 0;
+  }
+}
+@keyframes pop-dot {
+  0%,
+  30% {
+    opacity: 0;
+    transform: scale(0);
+  }
+  60%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+@keyframes fade-label {
+  0%,
+  70% {
+    opacity: 0;
+  }
+  100% {
+    opacity: 1;
+  }
+}
+@keyframes pulse-soft {
+  0%,
+  100% {
+    opacity: 0.55;
+  }
+  50% {
+    opacity: 1;
+  }
 }
