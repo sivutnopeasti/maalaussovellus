@@ -33,6 +33,7 @@ import InstructionModal from "./_screens/InstructionModal";
 import AnalysingScreen from "./_screens/AnalysingScreen";
 import BetweenWallsScreen from "./_screens/BetweenWallsScreen";
 import FinalSummaryScreen from "./_screens/FinalSummaryScreen";
+import PinchZoomBlocker from "./_screens/PinchZoomBlocker";
 
 const CameraCapture = dynamic(() => import("@/components/CameraCapture"), {
   ssr: false,
@@ -352,6 +353,10 @@ export default function HomePage() {
       className="relative w-full h-full overflow-hidden"
       data-scroll={allowScroll ? "true" : "false"}
     >
+      {/* iOS Safari pinch-zoom blocker — keeps the whole page from
+          zooming when the user pinches anywhere outside the canvas. */}
+      <PinchZoomBlocker />
+
       {/* ── 1. INTRO ─────────────────────────────────────────────────────── */}
       {step === "intro" && (
         <IntroScreen

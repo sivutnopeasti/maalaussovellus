@@ -12,6 +12,11 @@ body {
   height: 100%;
   width: 100%;
   overscroll-behavior: none;
+  /* Disallow pinch-zoom on the whole document. `pan-y` keeps vertical
+   * scrolling on the one screen that allows it (final summary). The
+   * canvas elements override this with their own touch-action below. */
+  touch-action: pan-y;
+  -ms-touch-action: pan-y;
 }
 
 /* Mobile-sized centred frame. On phones it fills the screen; on
@@ -26,6 +31,7 @@ body {
   position: relative;
   overflow: hidden;
   box-shadow: 0 0 30px rgba(15, 23, 42, 0.18);
+  touch-action: pan-y;
 }
 
 /* The page sets data-scroll="true" on its main element only when the
