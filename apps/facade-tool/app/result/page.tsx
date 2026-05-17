@@ -29,6 +29,7 @@ import {
   estimateWallHeightM,
   findReferenceVerticalEdge,
   storeWallHeight,
+  getStoredWallHeight,
   addMeasurement,
   getProject,
   projectTotalM2,
@@ -187,7 +188,25 @@ export default function ResultPage() {
 
   const handleNextWall = () => {
     sessionStorage.removeItem("facadeSession");
-    router.push("/?camera=1");
+    // Pass the wall height as a URL parameter as a robust fallback for
+    // browsers (notably iOS Safari) that may clear localStorage between
+    // page navigations or block storage access in private mode.
+    // Prefer the value we just stored on this page; fall back to
+    // localStorage if the React state was cleared somehow.
+    const fromState = lastStoredWallHeightM;
+    const fromStorage = getStoredWallHeight();
+    const wh =
+      fromState && fromState > 0
+        ? fromState
+        : fromStorage && fromStorage.valueM > 0
+          ? fromStorage.valueM
+          : null;
+    const url = wh ? `/?camera=1&wh=${wh.toFixed(4)}` : "/?camera=1";
+    console.log("[result] handleNextWall →", url, {
+      fromState,
+      fromStorage,
+    });
+    router.push(url);
   };
 
   const handleSaveQuote = async (data: {

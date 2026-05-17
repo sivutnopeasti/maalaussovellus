@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   Building2,
@@ -21,6 +21,7 @@ import type {
 } from "@/lib/types";
 import {
   getStoredWallHeight,
+  storeWallHeight,
   clearStoredWallHeight,
   getProject,
   clearProject,
@@ -68,6 +69,10 @@ export default function HomePage() {
   const [autoMode, setAutoMode] = useState(false);
   const [cameraOpen, setCameraOpen] = useState(false);
   const [introShown, setIntroShown] = useState(false);
+  /** In-memory fallback for the wall height carried by the `?wh=` URL
+   *  parameter. Used when iOS Safari (or private mode) refuses to
+   *  persist localStorage between navigations. */
+  const urlWallHeightRef = useRef<number | null>(null);
 
   // Load persisted project + wall height on mount. The camera is NOT
   // auto-opened: we always show the capture-step UI first so the user
@@ -75,8 +80,39 @@ export default function HomePage() {
   // taking the next photo. This eliminates the long-standing confusion
   // where the camera covered the diagnostic banner and the user couldn't
   // tell why the app fell back to manual reference.
+  //
+  // We also accept a `wh` URL parameter as a fallback for browsers
+  // (notably iOS Safari) that may clear localStorage between page
+  // navigations or block storage access entirely. If present, it takes
+  // precedence and is re-persisted to localStorage for subsequent reads.
   useEffect(() => {
-    const wh = getStoredWallHeight();
+    let wh = getStoredWallHeight();
+
+    if (typeof window !== "undefined") {
+      const params = new URLSearchParams(window.location.search);
+      const whParam = params.get("wh");
+      if (whParam) {
+        const parsed = Number.parseFloat(whParam);
+        if (Number.isFinite(parsed) && parsed > 0) {
+          console.log("[home] wh from URL param =", parsed);
+          // Re-persist to localStorage so handleCameraCapture can read it
+          // synchronously after navigation. On Safari this can fail
+          // silently — that's OK because we ALSO keep an in-memory copy
+          // (urlWallHeightRef + React state) to drive the decision.
+          storeWallHeight(parsed);
+          urlWallHeightRef.current = parsed;
+          wh = { valueM: parsed, savedAt: Date.now() };
+
+          // Strip the query string so a reload doesn't keep reapplying it.
+          try {
+            window.history.replaceState({}, "", "/");
+          } catch {
+            /* noop */
+          }
+        }
+      }
+    }
+
     setStoredWallHeight(wh);
     const proj = getProject();
     setProject(proj);
@@ -144,9 +180,25 @@ export default function HomePage() {
     // than from React state. This avoids closure-staleness issues when the
     // home page is re-mounted from the result page — the React state may
     // still be `null` while the value already exists in localStorage.
-    const wh = getStoredWallHeight();
+    //
+    // Three-tier resolution (each one a fallback for the previous):
+    //   1. localStorage (the primary path; works everywhere except some
+    //      iOS Safari private-mode / cross-navigation edge cases)
+    //   2. in-memory ref from the `?wh=` URL parameter at mount time
+    //      (covers iOS Safari and other browsers that drop storage)
+    //   3. React state captured at mount (last-resort)
+    let wh = getStoredWallHeight();
+    if (!wh && urlWallHeightRef.current) {
+      wh = { valueM: urlWallHeightRef.current, savedAt: Date.now() };
+      console.log("[capture] using urlWallHeightRef fallback", wh);
+    }
+    if (!wh && storedWallHeight) {
+      wh = storedWallHeight;
+      console.log("[capture] using React state fallback", wh);
+    }
     console.log("[capture] handleCameraCapture", {
       storedWallHeight: wh,
+      urlRef: urlWallHeightRef.current,
       FORCE_MANUAL_REFERENCE,
       willGoTo:
         !FORCE_MANUAL_REFERENCE && wh && wh.valueM > 0
