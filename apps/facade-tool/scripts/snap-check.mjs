@@ -148,6 +148,53 @@ function snapToNearestCorner(point, lm, r) {
   return bestX < 0 ? null : refineCornerCentroid(bestX, bestY, lm);
 }
 
+// ─── Morphological closing (mirrors lib/lineSnap.ts buildLineMap)
+function morphologicalClose(src, w, h) {
+  const dilated = new Uint8Array(w * h);
+  for (let y = 0; y < h; y++) {
+    const y0 = Math.max(0, y - 1);
+    const y1 = Math.min(h - 1, y + 1);
+    for (let x = 0; x < w; x++) {
+      const x0 = Math.max(0, x - 1);
+      const x1 = Math.min(w - 1, x + 1);
+      let any = 0;
+      for (let yy = y0; yy <= y1 && !any; yy++) {
+        for (let xx = x0; xx <= x1; xx++) {
+          if (src[yy * w + xx]) {
+            any = 1;
+            break;
+          }
+        }
+      }
+      dilated[y * w + x] = any;
+    }
+  }
+  const eroded = new Uint8Array(w * h);
+  for (let y = 0; y < h; y++) {
+    const y0 = Math.max(0, y - 1);
+    const y1 = Math.min(h - 1, y + 1);
+    for (let x = 0; x < w; x++) {
+      const x0 = Math.max(0, x - 1);
+      const x1 = Math.min(w - 1, x + 1);
+      if (x === 0 || y === 0 || x === w - 1 || y === h - 1) {
+        eroded[y * w + x] = 0;
+        continue;
+      }
+      let all = 1;
+      for (let yy = y0; yy <= y1 && all; yy++) {
+        for (let xx = x0; xx <= x1; xx++) {
+          if (!dilated[yy * w + xx]) {
+            all = 0;
+            break;
+          }
+        }
+      }
+      eroded[y * w + x] = all;
+    }
+  }
+  return eroded;
+}
+
 // Build a 200×200 mask with two perpendicular line segments meeting
 // at (100, 100) — a synthetic house corner.
 const W = 200;
@@ -273,6 +320,40 @@ function resolveSnap(raw, cornerR, lineR) {
       r2.snapped.x >= 100 &&
       r2.snapped.x <= 160,
     `${r2.kind} ${JSON.stringify(r2.snapped)}`,
+  );
+}
+
+// 7) Morphological closing — verify it bridges a 1-px gap in an
+//    otherwise straight horizontal line.
+{
+  const w = 30;
+  const h = 5;
+  const dashed = new Uint8Array(w * h);
+  // Dashed line at y=2: lit at x∈[5..14], gap at 15, lit at [16..25].
+  for (let x = 5; x <= 14; x++) dashed[2 * w + x] = 1;
+  for (let x = 16; x <= 25; x++) dashed[2 * w + x] = 1;
+
+  const closed = morphologicalClose(dashed, w, h);
+  check(
+    "morphological closing bridges 1-px gap",
+    closed[2 * w + 15] === 1,
+    `pixel at gap = ${closed[2 * w + 15]}`,
+  );
+}
+
+// 8) Morphological closing does NOT bridge a wide gap (sanity).
+{
+  const w = 30;
+  const h = 5;
+  const dashed = new Uint8Array(w * h);
+  for (let x = 5; x <= 10; x++) dashed[2 * w + x] = 1;
+  for (let x = 16; x <= 25; x++) dashed[2 * w + x] = 1; // 5-px gap
+
+  const closed = morphologicalClose(dashed, w, h);
+  check(
+    "morphological closing leaves 5-px gap open in centre",
+    closed[2 * w + 13] === 0,
+    `centre pixel = ${closed[2 * w + 13]}`,
   );
 }
 

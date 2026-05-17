@@ -19,12 +19,27 @@ export interface MlsdLineMapOutput {
  * click is moved to the nearest white pixel within a tolerance radius, so
  * the user's corner picks align exactly with house edges instead of being
  * slightly off due to imprecise clicking.
+ *
+ * Tuning:
+ *  - `score_threshold` lowered from the default 0.1 to 0.05. The MLSD
+ *    detector emits a per-segment confidence score; raising it produces
+ *    a cleaner but more fragmented raster (only the very strongest
+ *    edges survive), while lowering it captures weaker segments too,
+ *    which helps connect dashed-looking line breaks in eaves, sokkeli
+ *    edges and verticals on photos taken from oblique angles.
+ *  - `distance_threshold` left at 0.1 — the MLSD detector merges
+ *    co-linear segments within this distance, and 0.1 already pulls
+ *    multiple short segments along a long facade edge into one line.
  */
 export async function runMlsdLineDetection(
   imageUrl: string,
 ): Promise<MlsdLineMapOutput> {
   const result = await fal.subscribe("fal-ai/image-preprocessors/mlsd", {
-    input: { image_url: imageUrl },
+    input: {
+      image_url: imageUrl,
+      score_threshold: 0.05,
+      distance_threshold: 0.1,
+    },
   });
   return result.data as MlsdLineMapOutput;
 }

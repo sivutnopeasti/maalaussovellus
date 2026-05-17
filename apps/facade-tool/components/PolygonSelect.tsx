@@ -11,7 +11,6 @@ import {
   type LineMapData,
 } from "@/lib/lineSnap";
 import { useCanvasViewport } from "@/lib/useCanvasViewport";
-import { drawLoupe } from "@/lib/canvasLoupe";
 import ZoomControls from "./ZoomControls";
 
 interface Props {
@@ -48,12 +47,15 @@ type Phase = "drawing" | "done";
 
 /** Snap radii as a fraction of the image diagonal.
  *
- *  Corners get a much larger search radius (12%) than regular line
+ *  Corners get a much larger search radius (18%) than regular line
  *  pixels (5%): a building corner is an unambiguous "anchor" the user
  *  is clearly aiming at, so we want to forgive imprecise taps and still
- *  catch the right point. Regular lines stay at a tighter radius so the
- *  fallback doesn't yank the click toward a nearby unrelated edge. */
-const CORNER_SNAP_RADIUS_FRACTION = 0.12;
+ *  catch the right point. 18% works out to ~900 px on a 4032×3024
+ *  photo — about a quarter of the screen width on a phone, plenty of
+ *  tolerance even for users tapping noticeably off-target. Regular
+ *  lines stay at a tighter radius so the fallback doesn't yank the
+ *  click toward a nearby unrelated edge. */
+const CORNER_SNAP_RADIUS_FRACTION = 0.18;
 const LINE_SNAP_RADIUS_FRACTION = 0.05;
 
 export default function PolygonSelect({
@@ -105,6 +107,7 @@ export default function PolygonSelect({
   >("idle");
   const [mlsdStats, setMlsdStats] = useState<{
     whitePixels: number;
+    rawWhitePixels: number;
     whiteRatio: number;
     width: number;
     height: number;
@@ -194,6 +197,7 @@ export default function PolygonSelect({
         setMlsdStatus("ready");
         setMlsdStats({
           whitePixels: lm.whitePixels,
+          rawWhitePixels: lm.rawWhitePixels,
           whiteRatio: lm.whiteRatio,
           width: lm.width,
           height: lm.height,
@@ -474,42 +478,11 @@ export default function PolygonSelect({
     viewport.applyTransform(ctx);
     ctx.drawImage(img, 0, 0, canvasSize.w, canvasSize.h);
     drawOverlay(ctx, canvas);
-
-    // Loupe — only while the user is actively touching/holding the
-    // canvas (so it appears on mobile during a tap-and-hold but stays
-    // hidden when the user is just looking). Tracks the current
-    // cursor/finger position and shows the snap correction live so the
-    // user can release with confidence.
-    if (pointerActive && hoverSnap && phase === "drawing") {
-      const canvasPoint = {
-        x: hoverSnap.cursor.x * scale * viewport.zoom + viewport.pan.x,
-        y: hoverSnap.cursor.y * scale * viewport.zoom + viewport.pan.y,
-      };
-      ctx.save();
-      viewport.resetTransform(ctx);
-      drawLoupe(ctx, {
-        imagePoint: hoverSnap.cursor,
-        canvasPoint,
-        source: img,
-        canvasW: canvas.width,
-        canvasH: canvas.height,
-        shape: "rounded",
-        width: 160,
-        height: 110,
-        borderRadius: 18,
-        magnification: 1.7,
-        snapPoint: hoverSnap.snapped,
-        accent:
-          hoverSnap.kind === "corner"
-            ? "#10b981"
-            : hoverSnap.kind === "line"
-              ? "#22d3ee"
-              : "#94a3b8",
-      });
-      ctx.restore();
-      viewport.applyTransform(ctx);
-    }
-  }, [canvasSize, drawOverlay, viewport, pointerActive, hoverSnap, phase, scale]);
+    // Loupe intentionally NOT drawn in PolygonSelect — the user asked
+    // for it to be limited to the reference-measurement step, since
+    // when placing a polygon they're tapping discrete corners (one tap
+    // each) and don't need a continuous magnified preview.
+  }, [canvasSize, drawOverlay, viewport]);
 
   /** Debug canvas — same dimensions as the main one. Draws the
    *  currently-active snap mask underneath (raw MLSD lines OR the
@@ -889,6 +862,21 @@ export default function PolygonSelect({
                 <span>
                   {mlsdStats.width}×{mlsdStats.height} px ·{" "}
                   {(mlsdStats.whiteRatio * 100).toFixed(1)}% valkoista
+                </span>
+                <span className="text-slate-500">Pikselit:</span>
+                <span>
+                  raaka {mlsdStats.rawWhitePixels.toLocaleString("fi")} →{" "}
+                  sulkemisen jälkeen{" "}
+                  {mlsdStats.whitePixels.toLocaleString("fi")}{" "}
+                  <span className="text-emerald-700">
+                    (+
+                    {Math.round(
+                      ((mlsdStats.whitePixels - mlsdStats.rawWhitePixels) /
+                        Math.max(1, mlsdStats.rawWhitePixels)) *
+                        100,
+                    )}
+                    %)
+                  </span>
                 </span>
                 <span className="text-slate-500">Lähdekuva:</span>
                 <span>
