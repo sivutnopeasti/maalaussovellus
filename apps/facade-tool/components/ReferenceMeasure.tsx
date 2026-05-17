@@ -1,27 +1,49 @@
 "use client";
 
 import { useRef, useEffect, useState, useCallback } from "react";
-import { Ruler, RotateCcw, Check } from "lucide-react";
+import { Ruler, RotateCcw, Check, Magnet } from "lucide-react";
 import type { Point, ReferenceData } from "@/lib/types";
 import { useCanvasViewport } from "@/lib/useCanvasViewport";
 import { drawLoupe } from "@/lib/canvasLoupe";
+import {
+  buildLineMap,
+  snapToNearestLine,
+  type LineMapData,
+} from "@/lib/lineSnap";
 import ZoomControls from "./ZoomControls";
 
 interface Props {
   imageDataUrl: string;
+  /** Native pixel size of the photo (must match MLSD scale). */
+  imageWidth: number;
+  imageHeight: number;
+  /** M-LSD line map URL when available */
+  mlsdMapUrl?: string;
   onReferenceSet: (data: ReferenceData) => void;
 }
 
 type Phase = "point1" | "point2" | "input";
 
+/** Same fraction as polygon line snap — nearest edge within ~5% of diag. */
+const LINE_SNAP_RADIUS_FRACTION = 0.05;
+
 /** Hit-area radius in *screen* pixels for grabbing an existing point.
  *  ~28 px feels right on a phone (a finger pad is ~10-12 mm = ~40 px). */
 const HIT_RADIUS_PX = 28;
 
-export default function ReferenceMeasure({ imageDataUrl, onReferenceSet }: Props) {
+export default function ReferenceMeasure({
+  imageDataUrl,
+  imageWidth,
+  imageHeight,
+  mlsdMapUrl,
+  onReferenceSet,
+}: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const canvasWrapperRef = useRef<HTMLDivElement>(null);
   const imageRef = useRef<HTMLImageElement | null>(null);
+  const lineMapRef = useRef<LineMapData | null>(null);
+  const [lineMapReady, setLineMapReady] = useState(false);
+  const [snapEnabled, setSnapEnabled] = useState(true);
   const [phase, setPhase] = useState<Phase>("point1");
   const [points, setPoints] = useState<Point[]>([]);
   const [meters, setMeters] = useState("");
@@ -87,6 +109,79 @@ export default function ReferenceMeasure({ imageDataUrl, onReferenceSet }: Props
       h: Math.round(imgDims.h * s),
     });
   }, [imgDims, containerSize]);
+
+  /** Effective source dimensions (URL image may decode before props catch up). */
+  const srcW = imageWidth > 0 ? imageWidth : imgDims.w;
+  const srcH = imageHeight > 0 ? imageHeight : imgDims.h;
+
+  // Decode MLSD raster for edge snapping (same pipeline as PolygonSelect).
+  useEffect(() => {
+    if (!mlsdMapUrl) {
+      lineMapRef.current = null;
+      setLineMapReady(false);
+      return;
+    }
+    let cancelled = false;
+    const img = new Image();
+    img.crossOrigin = "anonymous";
+    img.onload = () => {
+      if (cancelled) return;
+      try {
+        const lm = buildLineMap(img);
+        lineMapRef.current = lm;
+        setLineMapReady(true);
+      } catch {
+        lineMapRef.current = null;
+        setLineMapReady(false);
+      }
+    };
+    img.onerror = () => {
+      if (!cancelled) {
+        lineMapRef.current = null;
+        setLineMapReady(false);
+      }
+    };
+    img.src = mlsdMapUrl;
+    return () => {
+      cancelled = true;
+    };
+  }, [mlsdMapUrl, srcW, srcH]);
+
+  /** Snap raw coords to nearest MLSD line; second endpoint is forced to
+   *  the same y as `anchorY` so the reference is always horizontal. */
+  const applyRefPoint = useCallback(
+    (raw: Point, which: 0 | 1, anchorY?: number): Point => {
+      const w = imgDims.w;
+      const h = imgDims.h;
+      if (w <= 0 || h <= 0) return raw;
+      let x = Math.max(0, Math.min(w - 1, raw.x));
+      let y = Math.max(0, Math.min(h - 1, raw.y));
+      let p: Point = { x, y };
+
+      if (snapEnabled && lineMapRef.current && srcW > 0 && srcH > 0) {
+        const lm = lineMapRef.current;
+        const diag = Math.hypot(srcW, srcH);
+        const r = diag * LINE_SNAP_RADIUS_FRACTION;
+        const snapped = snapToNearestLine(
+          p,
+          lm,
+          r,
+          lm.width / srcW,
+          lm.height / srcH,
+        );
+        if (snapped) p = snapped;
+      }
+
+      if (which === 1 && anchorY !== undefined) {
+        p = {
+          x: Math.max(0, Math.min(w - 1, p.x)),
+          y: Math.max(0, Math.min(h - 1, anchorY)),
+        };
+      }
+      return p;
+    },
+    [imgDims.h, imgDims.w, snapEnabled, srcW, srcH],
+  );
 
   // ── Drawing ────────────────────────────────────────────────────────
 
@@ -289,14 +384,23 @@ export default function ReferenceMeasure({ imageDataUrl, onReferenceSet }: Props
       if (drag && drag.pointerId === e.pointerId) {
         drag.moved = true;
         const img = eventToImage(e.clientX, e.clientY);
-        // Clamp to image bounds so the user can't accidentally drag a
-        // point off-canvas.
         const x = Math.max(0, Math.min(imgDims.w - 1, img.x));
         const y = Math.max(0, Math.min(imgDims.h - 1, img.y));
         setPoints((prev) => {
           if (draggingIdx === null) return prev;
           const next = [...prev];
-          next[draggingIdx] = { x, y };
+          if (draggingIdx === 0) {
+            const p = applyRefPoint({ x, y }, 0);
+            next[0] = p;
+            if (next.length >= 2) {
+              next[1] = {
+                x: next[1].x,
+                y: p.y,
+              };
+            }
+          } else {
+            next[1] = applyRefPoint({ x, y }, 1, next[0].y);
+          }
           return next;
         });
         return;
@@ -311,7 +415,15 @@ export default function ReferenceMeasure({ imageDataUrl, onReferenceSet }: Props
 
       viewport.eventProps.onPointerMove(e);
     },
-    [eventToImage, hitTest, hoverIdx, imgDims, draggingIdx, viewport.eventProps],
+    [
+      eventToImage,
+      hitTest,
+      hoverIdx,
+      imgDims,
+      draggingIdx,
+      viewport.eventProps,
+      applyRefPoint,
+    ],
   );
 
   const onPointerUp = useCallback(
@@ -402,18 +514,19 @@ export default function ReferenceMeasure({ imageDataUrl, onReferenceSet }: Props
       // handling above already covered the case where the user moved.)
       if (hitTest(img) !== null) return;
 
-      const x = Math.max(0, Math.min(imgDims.w - 1, img.x));
-      const y = Math.max(0, Math.min(imgDims.h - 1, img.y));
-
       if (phase === "point1") {
-        setPoints([{ x, y }]);
+        const p = applyRefPoint(img, 0);
+        setPoints([p]);
         setPhase("point2");
       } else {
-        setPoints((prev) => [prev[0], { x, y }]);
+        setPoints((prev) => {
+          const p = applyRefPoint(img, 1, prev[0].y);
+          return [prev[0], p];
+        });
         setPhase("input");
       }
     },
-    [phase, viewport, eventToImage, hitTest, imgDims],
+    [phase, viewport, eventToImage, hitTest, applyRefPoint],
   );
 
   // ── Confirm / reset ────────────────────────────────────────────────
@@ -466,14 +579,15 @@ export default function ReferenceMeasure({ imageDataUrl, onReferenceSet }: Props
         <Ruler className="w-4 h-4 text-blue-600 shrink-0" />
         {phase === "point1" && (
           <span className="text-blue-700 font-medium">
-            Aseta viivan <strong>alkupiste</strong> (vedä tarvittaessa
-            tarkemmaksi).
+            <strong>Vaakasuora</strong> referenssi: aseta{" "}
+            <strong>alkupiste</strong> tunnetun mittaviivan (esim. oven yläreuna)
+            päähän. Piste snäppää lähimmälle MLSD-reunalle.
           </span>
         )}
         {phase === "point2" && (
           <span className="text-blue-700 font-medium">
-            Aseta viivan <strong>loppupiste</strong> — molemmat tikut
-            ovat raahattavissa.
+            Aseta <strong>loppupiste</strong> samaan korkeuteen — viiva pysyy
+            automaattisesti vaakasuorana. Raahaa tarvittaessa.
           </span>
         )}
         {phase === "input" && (
@@ -519,6 +633,26 @@ export default function ReferenceMeasure({ imageDataUrl, onReferenceSet }: Props
             zoomBy={viewport.zoomBy}
             reset={viewport.reset}
           />
+        )}
+
+        {mlsdMapUrl && lineMapReady && (
+          <button
+            type="button"
+            onClick={() => setSnapEnabled((s) => !s)}
+            className={`absolute top-2 left-2 flex items-center gap-1 px-2 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider shadow z-[5] ${
+              snapEnabled
+                ? "bg-cyan-500/95 text-white"
+                : "bg-slate-900/80 text-cyan-200 border border-cyan-400/60"
+            }`}
+            title={
+              snapEnabled
+                ? "Reunatunnistus päällä (referenssipisteet)"
+                : "Ei snap"
+            }
+          >
+            <Magnet className="w-3 h-3" />
+            {snapEnabled ? "Snap" : "Ei snap"}
+          </button>
         )}
       </div>
 

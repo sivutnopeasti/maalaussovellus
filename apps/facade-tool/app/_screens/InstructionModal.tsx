@@ -54,7 +54,7 @@ export default function InstructionModal({ kind, onContinue, autoMode }: Props) 
 
         <p className="mt-1.5 text-sm text-blue-100/90">
           {isReference
-            ? "Anna sovellukselle yksi tunnettu mitta — esim. oven leveys (~90 cm) — niin kaikki muut mitat lasketaan automaattisesti."
+            ? "Anna sovellukselle yksi tunnettu mitta leveyssuunnassa: mittaa aina vaakasuoraan (esim. oven leveys ~90 cm). Sovellus lukitsee viivan vaakasuoraksi."
             : "Klikkaa talon nurkat järjestyksessä myötäpäivään: alanurkka → yläkulmat → harja → toinen yläkulma → alanurkka."}
         </p>
 
@@ -71,8 +71,9 @@ export default function InstructionModal({ kind, onContinue, autoMode }: Props) 
           <span>
             {isReference ? (
               <>
-                Vinkki: <strong>Vaakasuora</strong> viiva (esim. oven yläreuna,
-                sokkelin reuna) on tarkin. Voit zoomata sormilla.
+                Vinkki: <strong>Vaakasuora</strong> viiva (oven yläreuna,
+                sokkeli) — älä mittaa pystysuorassa. Viiva lukittuu vaakasuoraan
+                ja pisteet voivat snäpätä tunnistettuun reunaan. Zoomaa sormilla.
               </>
             ) : (
               <>

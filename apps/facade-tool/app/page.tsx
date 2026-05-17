@@ -122,6 +122,36 @@ export default function HomePage() {
     setError(null);
   }, []);
 
+  /** Host the capture on Fal storage + request MLSD in the background.
+   *  Called as early as possible on wall 1 (before ref-draw) so reference
+   *  snapping has a line map; poly-intro reuses the same upload when
+   *  it completes first. */
+  const runUploadAndMlsdForFile = useCallback(async (file: File) => {
+    try {
+      const fd = new FormData();
+      fd.append("file", file);
+      const res = await fetch("/api/upload", { method: "POST", body: fd });
+      if (!res.ok) return;
+      const { url } = await res.json();
+      setUploadedImageUrl(url);
+      try {
+        const r = await fetch("/api/lines", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ imageUrl: url }),
+        });
+        if (r.ok) {
+          const { url: mlsdUrl } = await r.json();
+          if (mlsdUrl) setMlsdMapUrl(mlsdUrl);
+        }
+      } catch {
+        /* non-essential */
+      }
+    } catch {
+      /* upload errors surface in the analysing step */
+    }
+  }, []);
+
   const wallCount = project?.measurements.length ?? 0;
   const wallIndex = wallCount + 1;
   const autoMode = storedWallHeightM !== null && storedWallHeightM > 0;
@@ -158,11 +188,14 @@ export default function HomePage() {
           setStep("poly-intro");
         } else {
           setStep("ref-intro");
+          // Warm up hosted image + MLSD while the user reads ref-intro so
+          // reference-line snapping works on ref-draw.
+          void runUploadAndMlsdForFile(file);
         }
       };
       img.src = dataUrl;
     },
-    [storedWallHeightM],
+    [storedWallHeightM, runUploadAndMlsdForFile],
   );
 
   const handleCancelCamera = useCallback(() => {
@@ -190,35 +223,10 @@ export default function HomePage() {
     // Upload + MLSD run in the background while the user is placing
     // their first corner. By the time they finish drawing (typically
     // 20-30 s), both should be ready.
-    if (!uploadedImageUrl) {
-      try {
-        const fd = new FormData();
-        fd.append("file", imageFile);
-        const res = await fetch("/api/upload", { method: "POST", body: fd });
-        if (res.ok) {
-          const { url } = await res.json();
-          setUploadedImageUrl(url);
-          void (async () => {
-            try {
-              const r = await fetch("/api/lines", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ imageUrl: url }),
-              });
-              if (r.ok) {
-                const { url: mlsdUrl } = await r.json();
-                if (mlsdUrl) setMlsdMapUrl(mlsdUrl);
-              }
-            } catch {
-              /* snap is non-essential */
-            }
-          })();
-        }
-      } catch {
-        /* upload errors surface in the analysing step instead */
-      }
+    if (!uploadedImageUrl && imageFile) {
+      void runUploadAndMlsdForFile(imageFile);
     }
-  }, [imageFile, uploadedImageUrl]);
+  }, [imageFile, uploadedImageUrl, runUploadAndMlsdForFile]);
 
   // ── 6. Polygon drawn → analyse ───────────────────────────────────────────
   const handlePolygonSet = useCallback(
@@ -403,6 +411,8 @@ export default function HomePage() {
       {step === "ref-draw" && imageDataUrl && (
         <ReferenceDrawScreen
           imageDataUrl={imageDataUrl}
+          imageDims={imageDims}
+          mlsdMapUrl={mlsdMapUrl}
           reference={reference}
           onReferenceSet={handleReferenceSet}
           onConfirm={handleReferenceConfirm}
@@ -500,6 +510,8 @@ function PhotoBackground({ dataUrl }: { dataUrl: string }) {
 
 interface ReferenceDrawProps {
   imageDataUrl: string;
+  imageDims: { w: number; h: number };
+  mlsdMapUrl: string | null;
   reference: ReferenceData | null;
   onReferenceSet: (data: ReferenceData) => void;
   onConfirm: () => void;
@@ -509,6 +521,8 @@ interface ReferenceDrawProps {
 
 function ReferenceDrawScreen({
   imageDataUrl,
+  imageDims,
+  mlsdMapUrl,
   reference,
   onReferenceSet,
   onConfirm,
@@ -544,6 +558,9 @@ function ReferenceDrawScreen({
       <div className="flex-1 min-h-0 overflow-hidden p-2.5">
         <ReferenceMeasure
           imageDataUrl={imageDataUrl}
+          imageWidth={imageDims.w}
+          imageHeight={imageDims.h}
+          mlsdMapUrl={mlsdMapUrl ?? undefined}
           onReferenceSet={onReferenceSet}
         />
       </div>
