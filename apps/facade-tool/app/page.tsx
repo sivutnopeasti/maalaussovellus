@@ -345,7 +345,9 @@ export default function HomePage() {
   }, [resetCurrentPhoto]);
 
   // ── Bound the visible area & lock scrolling per-step ─────────────────────
-  const allowScroll = step === "final";
+  // Polygon step temporarily allows scrolling so the MLSD debug overlay
+  // can be inspected underneath the picker.
+  const allowScroll = step === "final" || step === "poly-draw";
   const lastMeasurement = project?.measurements[project.measurements.length - 1];
 
   return (
@@ -587,9 +589,13 @@ function PolygonDrawScreen({
   onShowHelp,
   error,
 }: PolygonDrawProps) {
+  // TEMPORARY: render the MLSD raster and snap-log panel below the
+  // picker so we can debug whether snapping is actually finding the
+  // detected building edges. Allows vertical scrolling on this step.
+  const showMlsdDebug = true;
   return (
-    <div className="absolute inset-0 flex flex-col bg-white">
-      <header className="px-3 py-2.5 border-b border-slate-200 flex items-center gap-2 shrink-0">
+    <div className="min-h-full w-full flex flex-col bg-white">
+      <header className="sticky top-0 z-20 bg-white px-3 py-2.5 border-b border-slate-200 flex items-center gap-2 shrink-0">
         <button
           onClick={onBack}
           className="p-1.5 rounded-lg hover:bg-slate-100"
@@ -618,7 +624,7 @@ function PolygonDrawScreen({
         </div>
       )}
 
-      <div className="flex-1 min-h-0 overflow-hidden p-2.5">
+      <div className="p-2.5">
         {imageDataUrl && imageDims.w > 0 && (
           <PolygonSelect
             imageUrl={imageDataUrl}
@@ -628,6 +634,7 @@ function PolygonDrawScreen({
             reference={reference}
             autoWallHeightM={autoWallHeightM}
             mlsdMapUrl={mlsdMapUrl ?? undefined}
+            showMlsdDebug={showMlsdDebug}
           />
         )}
       </div>

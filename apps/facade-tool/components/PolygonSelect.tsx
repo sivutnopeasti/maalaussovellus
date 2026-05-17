@@ -35,6 +35,13 @@ interface Props {
    * pixel-accurate.
    */
   mlsdMapUrl?: string;
+  /**
+   * Temporary debug mode. When true, the M-LSD raster is rendered below
+   * the picker (with the same polygon overlay drawn on top) so the user
+   * can verify exactly which edges are being detected, and a snap log
+   * panel shows the last few clicks with their raw-vs-snapped position.
+   */
+  showMlsdDebug?: boolean;
 }
 
 type Phase = "drawing" | "done";
@@ -57,6 +64,7 @@ export default function PolygonSelect({
   reference,
   autoWallHeightM,
   mlsdMapUrl,
+  showMlsdDebug = false,
 }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const canvasWrapperRef = useRef<HTMLDivElement>(null);
@@ -90,6 +98,29 @@ export default function PolygonSelect({
   const [canvasSize, setCanvasSize] = useState({ w: 0, h: 0 });
   const [scale, setScale] = useState(1);
   const [phase, setPhase] = useState<Phase>("drawing");
+  /** MLSD load state — surfaced to the user so they know whether snap
+   *  is actually engaged. */
+  const [mlsdStatus, setMlsdStatus] = useState<
+    "idle" | "loading" | "ready" | "cors-error" | "load-error"
+  >("idle");
+  const [mlsdStats, setMlsdStats] = useState<{
+    whitePixels: number;
+    whiteRatio: number;
+    width: number;
+    height: number;
+  } | null>(null);
+  /** Rolling log of the last few clicks: raw → snapped, distance.
+   *  Visible only in `showMlsdDebug` mode. */
+  const [snapLog, setSnapLog] = useState<
+    Array<{
+      raw: Point;
+      snapped: Point | null;
+      kind: "corner" | "line" | null;
+      distPx: number | null;
+      radiusPx: number;
+      ts: number;
+    }>
+  >([]);
 
   const viewport = useCanvasViewport({
     imageScale: scale,
@@ -145,8 +176,12 @@ export default function PolygonSelect({
   // user has finished placing their first point. The decoded HTMLImage
   // is also kept so the debug-canvas below can render it.
   useEffect(() => {
-    if (!mlsdMapUrl) return;
+    if (!mlsdMapUrl) {
+      setMlsdStatus("idle");
+      return;
+    }
     let cancelled = false;
+    setMlsdStatus("loading");
     const img = new Image();
     img.crossOrigin = "anonymous";
     img.onload = () => {
@@ -156,6 +191,13 @@ export default function PolygonSelect({
         lineMapRef.current = lm;
         mlsdImageRef.current = img;
         setLineMapReady(true);
+        setMlsdStatus("ready");
+        setMlsdStats({
+          whitePixels: lm.whitePixels,
+          whiteRatio: lm.whiteRatio,
+          width: lm.width,
+          height: lm.height,
+        });
         console.log("[snap] MLSD map decoded", {
           mlsd: `${lm.width}×${lm.height}`,
           source: `${imageWidth}×${imageHeight}`,
@@ -163,11 +205,20 @@ export default function PolygonSelect({
           whiteRatio: (lm.whiteRatio * 100).toFixed(2) + "%",
         });
       } catch (err) {
-        console.warn("[snap] failed to decode MLSD map (likely CORS)", err);
+        // getImageData throws a SecurityError when the CDN response
+        // doesn't include CORS headers — the most common failure mode
+        // for Fal-hosted line maps.
+        const msg = err instanceof Error ? err.message : String(err);
+        const isCors = /tainted|cors|cross.?origin|security/i.test(msg);
+        setMlsdStatus(isCors ? "cors-error" : "load-error");
+        console.warn("[snap] failed to decode MLSD map", err);
       }
     };
     img.onerror = () => {
-      if (!cancelled) console.warn("[snap] MLSD image failed to load");
+      if (!cancelled) {
+        setMlsdStatus("load-error");
+        console.warn("[snap] MLSD image failed to load");
+      }
     };
     img.src = mlsdMapUrl;
     return () => {
@@ -301,22 +352,50 @@ export default function PolygonSelect({
     }
 
     // Snap hint — flash showing how the click was nudged onto a
-    // detected building edge. Cleared after ~700 ms.
+    // detected building edge. The "from" marker (where the user
+    // actually tapped) is drawn in red and the "to" marker (where it
+    // snapped to) in bright pink with a thick concentric halo, so the
+    // jump from tap → snap is impossible to miss.
     if (snapHint) {
+      const fx = sx(snapHint.from);
+      const fy = sy(snapHint.from);
+      const tx = sx(snapHint.to);
+      const ty = sy(snapHint.to);
       ctx.save();
-      ctx.strokeStyle = "#22d3ee";
-      ctx.lineWidth = viewport.strokeWidth(3);
-      ctx.setLineDash([viewport.strokeWidth(4), viewport.strokeWidth(4)]);
+      // Faint red "missed" target ring at the raw tap position.
+      ctx.strokeStyle = "rgba(239, 68, 68, 0.9)";
+      ctx.fillStyle = "rgba(239, 68, 68, 0.18)";
+      ctx.lineWidth = viewport.strokeWidth(2);
       ctx.beginPath();
-      ctx.moveTo(sx(snapHint.from), sy(snapHint.from));
-      ctx.lineTo(sx(snapHint.to), sy(snapHint.to));
+      ctx.arc(fx, fy, viewport.dotRadius(11), 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+      // Thick pink arrow from raw to snap.
+      ctx.strokeStyle = "#ec4899";
+      ctx.lineWidth = viewport.strokeWidth(4);
+      ctx.setLineDash([viewport.strokeWidth(6), viewport.strokeWidth(4)]);
+      ctx.beginPath();
+      ctx.moveTo(fx, fy);
+      ctx.lineTo(tx, ty);
       ctx.stroke();
       ctx.setLineDash([]);
+      // Pink target halo (large, semi-transparent) — the eye is drawn
+      // to it instantly.
+      ctx.fillStyle = "rgba(236, 72, 153, 0.28)";
       ctx.beginPath();
-      ctx.arc(sx(snapHint.to), sy(snapHint.to), viewport.dotRadius(13), 0, Math.PI * 2);
-      ctx.strokeStyle = "#22d3ee";
-      ctx.lineWidth = viewport.strokeWidth(2);
+      ctx.arc(tx, ty, viewport.dotRadius(22), 0, Math.PI * 2);
+      ctx.fill();
+      // Crisp pink ring on top.
+      ctx.strokeStyle = "#ec4899";
+      ctx.lineWidth = viewport.strokeWidth(3);
+      ctx.beginPath();
+      ctx.arc(tx, ty, viewport.dotRadius(15), 0, Math.PI * 2);
       ctx.stroke();
+      // Inner solid dot to mark the exact snap pixel.
+      ctx.fillStyle = "#ec4899";
+      ctx.beginPath();
+      ctx.arc(tx, ty, viewport.dotRadius(4), 0, Math.PI * 2);
+      ctx.fill();
       ctx.restore();
     }
 
@@ -414,8 +493,11 @@ export default function PolygonSelect({
         source: img,
         canvasW: canvas.width,
         canvasH: canvas.height,
-        radius: 64,
-        magnification: 2.5,
+        shape: "rounded",
+        width: 160,
+        height: 110,
+        borderRadius: 18,
+        magnification: 1.7,
         snapPoint: hoverSnap.snapped,
         accent:
           hoverSnap.kind === "corner"
@@ -611,8 +693,18 @@ export default function PolygonSelect({
       const final = snapped ?? raw;
       if (snapped) {
         setSnapHint({ from: raw, to: snapped });
-        window.setTimeout(() => setSnapHint(null), 700);
+        // Longer visible "jump" so the user can see the correction
+        // clearly. 700 ms was too quick on touch devices where the
+        // finger is still over the spot when the click commits.
+        window.setTimeout(() => setSnapHint(null), 1500);
       }
+      // Append to debug log, keep the last 6 entries
+      setSnapLog((prev) =>
+        [
+          ...prev,
+          { raw, snapped, kind, distPx, radiusPx: radius, ts: Date.now() },
+        ].slice(-6),
+      );
       setPoints((prev) => [...prev, final]);
     },
     [phase, eventToImage, resolveSnap, viewport],
@@ -639,8 +731,18 @@ export default function PolygonSelect({
     autoWallHeightM > 0 &&
     (!reference || reference.pixelsPerMeter <= 0);
 
+  // Layout shape: in debug mode the picker grows beyond the viewport so
+  // the user can scroll down to see the MLSD raster and snap log.
+  // Otherwise the original fills-the-viewport layout is kept.
+  const outerCls = showMlsdDebug
+    ? "flex flex-col gap-2"
+    : "flex flex-col h-full min-h-0 gap-2";
+  const canvasWrapperCls = showMlsdDebug
+    ? "relative h-[55vh] rounded-xl overflow-hidden border-2 border-slate-200 bg-slate-900 flex items-center justify-center shrink-0"
+    : "relative flex-1 min-h-0 rounded-xl overflow-hidden border-2 border-slate-200 bg-slate-900 flex items-center justify-center";
+
   return (
-    <div className="flex flex-col h-full min-h-0 gap-2">
+    <div className={outerCls}>
       {/* Compact one-line phase prompt — replaces the long static
           instruction blocks. Auto-scale + MLSD context are conveyed
           through the in-canvas labels and the hover preview. */}
@@ -674,12 +776,10 @@ export default function PolygonSelect({
       </div>
 
       {/* Canvas wrapper — flex-1 + min-h-0 + flex centering ensures the
-          canvas always fits the visible area on phones, both width and
-          height. */}
-      <div
-        ref={canvasWrapperRef}
-        className="relative flex-1 min-h-0 rounded-xl overflow-hidden border-2 border-slate-200 bg-slate-900 flex items-center justify-center"
-      >
+          canvas always fits the visible area on phones (in non-debug
+          mode). In debug mode it has a fixed height so the MLSD view
+          below has space too. */}
+      <div ref={canvasWrapperRef} className={canvasWrapperCls}>
         {canvasSize.w > 0 && (
           <canvas
             ref={canvasRef}
@@ -733,19 +833,16 @@ export default function PolygonSelect({
             {snapEnabled ? "Snap" : "Ei snap"}
           </button>
         )}
-
-        {/* Hidden in production — keep the debug canvas mounted so the
-            redraw code keeps running, but visually invisible. */}
-        <canvas
-          ref={debugCanvasRef}
-          width={canvasSize.w}
-          height={canvasSize.h}
-          className="hidden"
-        />
       </div>
 
       {/* Action bar */}
-      <div className="flex items-center gap-2 shrink-0">
+      <div
+        className={`flex items-center gap-2 shrink-0 ${
+          showMlsdDebug
+            ? "sticky bottom-0 bg-white py-2 -mx-2.5 px-2.5 border-t border-slate-100 z-10"
+            : ""
+        }`}
+      >
         {phase === "drawing" && points.length >= 3 && (
           <button
             onClick={handleConfirm}
@@ -775,6 +872,177 @@ export default function PolygonSelect({
         )}
       </div>
 
+      {/* ─── DEBUG SECTION — only when showMlsdDebug ────────────────── */}
+      {showMlsdDebug ? (
+        <>
+          {/* MLSD-status panel */}
+          <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs space-y-2">
+            <div className="flex items-center justify-between">
+              <h3 className="text-[11px] uppercase tracking-wider font-bold text-slate-600">
+                Snap-tila
+              </h3>
+              <SnapStatusBadge status={mlsdStatus} />
+            </div>
+            {mlsdStats && (
+              <div className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 text-slate-700">
+                <span className="text-slate-500">MLSD-raster:</span>
+                <span>
+                  {mlsdStats.width}×{mlsdStats.height} px ·{" "}
+                  {(mlsdStats.whiteRatio * 100).toFixed(1)}% valkoista
+                </span>
+                <span className="text-slate-500">Lähdekuva:</span>
+                <span>
+                  {imageWidth}×{imageHeight} px (diag{" "}
+                  {Math.round(Math.hypot(imageWidth, imageHeight))})
+                </span>
+                <span className="text-slate-500">Snap-säteet:</span>
+                <span>
+                  kulma{" "}
+                  {Math.round(
+                    Math.hypot(imageWidth, imageHeight) *
+                      CORNER_SNAP_RADIUS_FRACTION,
+                  )}{" "}
+                  px · viiva{" "}
+                  {Math.round(
+                    Math.hypot(imageWidth, imageHeight) *
+                      LINE_SNAP_RADIUS_FRACTION,
+                  )}{" "}
+                  px
+                </span>
+              </div>
+            )}
+            {mlsdStatus === "cors-error" && (
+              <p className="text-red-700">
+                MLSD-kuva ladattu, mutta selain estää datan luvun
+                (CORS). Snap ei voi toimia ennen kuin Fal CDN palauttaa
+                CORS-headerit.
+              </p>
+            )}
+            {mlsdStatus === "load-error" && (
+              <p className="text-red-700">
+                MLSD-kuvaa ei pystytty lataamaan. Tarkista verkkoyhteys.
+              </p>
+            )}
+            {mlsdStatus === "loading" && (
+              <p className="text-slate-500">Ladataan MLSD-viivakarttaa…</p>
+            )}
+          </div>
+
+          {/* Live MLSD raster mirror */}
+          <div className="flex flex-col gap-1.5">
+            <h3 className="text-[11px] uppercase tracking-wider font-bold text-slate-600 px-1">
+              Debug: MLSD-viivakartta
+            </h3>
+            <div className="relative h-[55vh] rounded-xl overflow-hidden border-2 border-slate-200 bg-slate-900 flex items-center justify-center">
+              {mlsdImageRef.current && canvasSize.w > 0 ? (
+                <canvas
+                  ref={debugCanvasRef}
+                  width={canvasSize.w}
+                  height={canvasSize.h}
+                  className="block"
+                  style={{ maxWidth: "100%", maxHeight: "100%" }}
+                />
+              ) : (
+                <p className="text-slate-400 text-xs px-3 text-center">
+                  MLSD-kuva ei ole vielä saatavilla.
+                </p>
+              )}
+            </div>
+            <p className="text-[10px] text-slate-500 px-1">
+              Vaaleat viivat = MLSD:n havaitsemat rakenteelliset reunat.
+              Klikkaukset näkyvät samalla yli — vihreä pinkkitäpläke =
+              snap-piste.
+            </p>
+          </div>
+
+          {/* Snap log */}
+          <div className="rounded-xl border border-slate-200 bg-white p-3 text-xs">
+            <h3 className="text-[11px] uppercase tracking-wider font-bold text-slate-600 mb-2">
+              Viimeiset klikkaukset
+            </h3>
+            {snapLog.length === 0 ? (
+              <p className="text-slate-400">Ei vielä klikkauksia.</p>
+            ) : (
+              <ul className="space-y-1.5">
+                {snapLog
+                  .slice()
+                  .reverse()
+                  .map((s, idx) => (
+                    <li
+                      key={s.ts}
+                      className="flex items-start gap-2 leading-snug"
+                    >
+                      <span className="font-mono text-slate-400 w-5 shrink-0">
+                        {snapLog.length - idx}.
+                      </span>
+                      <span className="flex-1">
+                        klikkaus ({s.raw.x.toFixed(0)},{" "}
+                        {s.raw.y.toFixed(0)}) →{" "}
+                        {s.snapped ? (
+                          <>
+                            <strong
+                              className={
+                                s.kind === "corner"
+                                  ? "text-emerald-700"
+                                  : "text-cyan-700"
+                              }
+                            >
+                              {s.kind === "corner" ? "KULMA" : "viiva"}
+                            </strong>{" "}
+                            ({s.snapped.x.toFixed(0)},{" "}
+                            {s.snapped.y.toFixed(0)}) · siirto{" "}
+                            {s.distPx?.toFixed(0)} px / säde{" "}
+                            {s.radiusPx.toFixed(0)} px
+                          </>
+                        ) : (
+                          <span className="text-slate-500">
+                            ei snap-osumaa säteellä{" "}
+                            {s.radiusPx.toFixed(0)} px
+                          </span>
+                        )}
+                      </span>
+                    </li>
+                  ))}
+              </ul>
+            )}
+          </div>
+        </>
+      ) : (
+        /* Hidden in non-debug mode — keep the debug canvas mounted in
+           a hidden div so the redraw effect always runs (no-op
+           otherwise but harmless). */
+        <div className="hidden">
+          <canvas
+            ref={debugCanvasRef}
+            width={canvasSize.w}
+            height={canvasSize.h}
+          />
+        </div>
+      )}
     </div>
+  );
+}
+
+function SnapStatusBadge({ status }: { status: string }) {
+  const map: Record<string, { label: string; cls: string }> = {
+    idle: { label: "Ei MLSD-kuvaa", cls: "bg-slate-200 text-slate-700" },
+    loading: { label: "Ladataan…", cls: "bg-amber-100 text-amber-700" },
+    ready: { label: "Valmis", cls: "bg-emerald-100 text-emerald-700" },
+    "cors-error": {
+      label: "CORS-virhe",
+      cls: "bg-red-100 text-red-700",
+    },
+    "load-error": {
+      label: "Latausvirhe",
+      cls: "bg-red-100 text-red-700",
+    },
+  };
+  const m = map[status] ?? map.idle;
+  return (
+    <span
+      className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wide ${m.cls}`}
+    >
+      {m.label}
+    </span>
   );
 }

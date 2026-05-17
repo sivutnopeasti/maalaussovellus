@@ -22,9 +22,19 @@ export interface DrawLoupeOpts {
   /** Canvas dimensions in CSS pixels. */
   canvasW: number;
   canvasH: number;
-  /** Loupe geometry — radius and magnification level. Defaults are
-   *  tuned for phone use (loupe radius ≈ 60 px, 2.5× zoom). */
-  radius?: number;
+  /** Loupe shape: a rectangular pill is easier to scan visually (more
+   *  horizontal context, less screen real estate consumed) than a
+   *  circle. Defaults to "rounded" rectangle. */
+  shape?: "rounded" | "circle";
+  /** Width of the loupe in canvas px (rounded rect only). */
+  width?: number;
+  /** Height of the loupe in canvas px (rounded rect only). */
+  height?: number;
+  /** Corner radius of the rounded-rect loupe in canvas px. */
+  borderRadius?: number;
+  /** Magnification level. Lower = more context, less detail.
+   *  1.7× was chosen so a sokkeli / tikkurila eaves still fits inside
+   *  the window while remaining clearly readable. */
   magnification?: number;
   /** Optional secondary marker — drawn as a small ring inside the
    *  loupe to indicate where a snap would land. */
@@ -33,8 +43,32 @@ export interface DrawLoupeOpts {
   accent?: string;
 }
 
+/** Helper: rounded-rect path (avoids relying on ctx.roundRect for
+ *  older targets, even though it's now standard). */
+function roundRectPath(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  r: number,
+): void {
+  const rr = Math.min(r, w / 2, h / 2);
+  ctx.beginPath();
+  ctx.moveTo(x + rr, y);
+  ctx.lineTo(x + w - rr, y);
+  ctx.arcTo(x + w, y, x + w, y + rr, rr);
+  ctx.lineTo(x + w, y + h - rr);
+  ctx.arcTo(x + w, y + h, x + w - rr, y + h, rr);
+  ctx.lineTo(x + rr, y + h);
+  ctx.arcTo(x, y + h, x, y + h - rr, rr);
+  ctx.lineTo(x, y + rr);
+  ctx.arcTo(x, y, x + rr, y, rr);
+  ctx.closePath();
+}
+
 /**
- * Draw a circular magnifier on the canvas. Assumes ctx is in identity
+ * Draw a magnifier on the canvas. Assumes ctx is in identity
  * transform (caller has called `viewport.resetTransform(ctx)`).
  */
 export function drawLoupe(
@@ -47,85 +81,124 @@ export function drawLoupe(
     source,
     canvasW,
     canvasH,
-    radius = 60,
-    magnification = 2.5,
+    shape = "rounded",
+    width = 160,
+    height = 110,
+    borderRadius = 18,
+    magnification = 1.7,
     snapPoint = null,
     accent = "#EF4444",
   } = opts;
 
   if (!source || !source.complete || source.naturalWidth === 0) return;
 
+  // Loupe extent. For the legacy circle shape we treat (width/2) as
+  // the radius so both code paths share clamping logic.
+  const halfW = shape === "circle" ? width / 2 : width / 2;
+  const halfH = shape === "circle" ? width / 2 : height / 2;
+  const loupeW = shape === "circle" ? width : width;
+  const loupeH = shape === "circle" ? width : height;
+
   // Place the loupe above the target. If it would clip the top edge,
   // flip below the finger instead. Horizontally clamp into the canvas.
-  const gap = 36; // px of space between loupe edge and finger
+  const gap = 38; // px of space between loupe edge and finger
   let cx = canvasPoint.x;
-  let cy = canvasPoint.y - radius - gap;
-  if (cy - radius < 6) cy = canvasPoint.y + radius + gap;
-  if (cy + radius > canvasH - 6) cy = canvasPoint.y - radius - gap;
-  cx = Math.max(radius + 6, Math.min(canvasW - radius - 6, cx));
+  let cy = canvasPoint.y - halfH - gap;
+  if (cy - halfH < 6) cy = canvasPoint.y + halfH + gap;
+  if (cy + halfH > canvasH - 6) cy = canvasPoint.y - halfH - gap;
+  cx = Math.max(halfW + 6, Math.min(canvasW - halfW - 6, cx));
 
-  // Source slice from the original image. We sample around imagePoint
-  // and let drawImage shrink/expand to the loupe diameter.
-  const srcSize = (radius * 2) / magnification;
-  const halfSrc = srcSize / 2;
+  // Source slice. We sample around imagePoint and let drawImage
+  // shrink/expand to the loupe dimensions.
+  const srcW = loupeW / magnification;
+  const srcH = loupeH / magnification;
   // Clamp the source rect inside the image bounds so we never sample
-  // out-of-range pixels (which makes browsers throw or render black).
+  // out-of-range pixels.
   const srcX = Math.max(
     0,
-    Math.min(source.naturalWidth - srcSize, imagePoint.x - halfSrc),
+    Math.min(source.naturalWidth - srcW, imagePoint.x - srcW / 2),
   );
   const srcY = Math.max(
     0,
-    Math.min(source.naturalHeight - srcSize, imagePoint.y - halfSrc),
+    Math.min(source.naturalHeight - srcH, imagePoint.y - srcH / 2),
   );
 
   // Where does the target point land *inside* the loupe? If we had to
   // clamp the source rect (point near the image edge), the centre of
   // the loupe no longer corresponds to the user's actual point, so we
   // need to draw the cross-hair where the point actually is.
-  const targetInLoupeX = (imagePoint.x - srcX) * magnification + (cx - radius);
-  const targetInLoupeY = (imagePoint.y - srcY) * magnification + (cy - radius);
+  const targetInLoupeX = (imagePoint.x - srcX) * magnification + (cx - halfW);
+  const targetInLoupeY = (imagePoint.y - srcY) * magnification + (cy - halfH);
 
   ctx.save();
 
-  // Drop shadow ring for the loupe border.
-  ctx.beginPath();
-  ctx.arc(cx, cy, radius + 5, 0, Math.PI * 2);
-  ctx.fillStyle = "rgba(15, 23, 42, 0.45)";
-  ctx.shadowColor = "rgba(0,0,0,0.4)";
-  ctx.shadowBlur = 12;
-  ctx.shadowOffsetY = 4;
-  ctx.fill();
-  ctx.shadowColor = "transparent";
-
-  // Magnified photo, clipped to a circle.
+  // Drop shadow ring for the loupe border (drawn behind the loupe so
+  // it reads as a card floating above the canvas).
   ctx.save();
-  ctx.beginPath();
-  ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+  ctx.shadowColor = "rgba(0,0,0,0.45)";
+  ctx.shadowBlur = 14;
+  ctx.shadowOffsetY = 5;
+  ctx.fillStyle = "rgba(15, 23, 42, 0.55)";
+  if (shape === "circle") {
+    ctx.beginPath();
+    ctx.arc(cx, cy, halfW + 4, 0, Math.PI * 2);
+    ctx.fill();
+  } else {
+    roundRectPath(
+      ctx,
+      cx - halfW - 4,
+      cy - halfH - 4,
+      loupeW + 8,
+      loupeH + 8,
+      borderRadius + 4,
+    );
+    ctx.fill();
+  }
+  ctx.restore();
+
+  // Magnified photo, clipped to the loupe shape.
+  ctx.save();
+  if (shape === "circle") {
+    ctx.beginPath();
+    ctx.arc(cx, cy, halfW, 0, Math.PI * 2);
+  } else {
+    roundRectPath(
+      ctx,
+      cx - halfW,
+      cy - halfH,
+      loupeW,
+      loupeH,
+      borderRadius,
+    );
+  }
   ctx.clip();
+
+  // Dark background so we always have a defined backdrop even if the
+  // source draw misses.
   ctx.fillStyle = "#0f172a";
-  ctx.fillRect(cx - radius, cy - radius, radius * 2, radius * 2);
+  ctx.fillRect(cx - halfW, cy - halfH, loupeW, loupeH);
+
   ctx.drawImage(
     source,
     srcX,
     srcY,
-    srcSize,
-    srcSize,
-    cx - radius,
-    cy - radius,
-    radius * 2,
-    radius * 2,
+    srcW,
+    srcH,
+    cx - halfW,
+    cy - halfH,
+    loupeW,
+    loupeH,
   );
 
-  // Cross-hair through the target point. The diameter is drawn fully
-  // — the clip will cull anything outside the loupe.
-  ctx.strokeStyle = "rgba(255, 255, 255, 0.65)";
+  // Cross-hair through the target point. Drawn full-extent; the clip
+  // culls anything outside the loupe.
+  ctx.strokeStyle = "rgba(255, 255, 255, 0.6)";
   ctx.lineWidth = 1;
   ctx.beginPath();
-  ctx.moveTo(targetInLoupeX - radius, targetInLoupeY);
-  ctx.lineTo(targetInLoupeX + radius, targetInLoupeY);
-  ctx.moveTo(targetInLoupeX, targetInLoupeY - radius);
-  ctx.lineTo(targetInLoupeX, targetInLoupeY + radius);
+  ctx.moveTo(targetInLoupeX - loupeW, targetInLoupeY);
+  ctx.lineTo(targetInLoupeX + loupeW, targetInLoupeY);
+  ctx.moveTo(targetInLoupeX, targetInLoupeY - loupeH);
+  ctx.lineTo(targetInLoupeX, targetInLoupeY + loupeH);
   ctx.stroke();
 
   // Snap indicator (optional). Drawn as a hollow ring at the snap
@@ -133,17 +206,17 @@ export function drawLoupe(
   // would correct their click before releasing.
   if (snapPoint) {
     const snapInLoupeX =
-      (snapPoint.x - srcX) * magnification + (cx - radius);
+      (snapPoint.x - srcX) * magnification + (cx - halfW);
     const snapInLoupeY =
-      (snapPoint.y - srcY) * magnification + (cy - radius);
+      (snapPoint.y - srcY) * magnification + (cy - halfH);
     ctx.strokeStyle = "#10b981";
     ctx.lineWidth = 2.5;
     ctx.beginPath();
-    ctx.arc(snapInLoupeX, snapInLoupeY, 8, 0, Math.PI * 2);
+    ctx.arc(snapInLoupeX, snapInLoupeY, 9, 0, Math.PI * 2);
     ctx.stroke();
-    // Line connecting raw target to snap so the user sees the
+    // Dashed line connecting raw target to snap so the user sees the
     // correction direction.
-    ctx.strokeStyle = "rgba(16, 185, 129, 0.65)";
+    ctx.strokeStyle = "rgba(16, 185, 129, 0.7)";
     ctx.setLineDash([3, 3]);
     ctx.lineWidth = 1.5;
     ctx.beginPath();
@@ -165,8 +238,19 @@ export function drawLoupe(
   ctx.restore(); // remove clip
 
   // Outer white border on top of everything.
-  ctx.beginPath();
-  ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+  if (shape === "circle") {
+    ctx.beginPath();
+    ctx.arc(cx, cy, halfW, 0, Math.PI * 2);
+  } else {
+    roundRectPath(
+      ctx,
+      cx - halfW,
+      cy - halfH,
+      loupeW,
+      loupeH,
+      borderRadius,
+    );
+  }
   ctx.strokeStyle = "#FFFFFF";
   ctx.lineWidth = 3;
   ctx.stroke();

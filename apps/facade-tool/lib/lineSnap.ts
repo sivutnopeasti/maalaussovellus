@@ -240,7 +240,8 @@ export function snapToNearestCorner(
   // Fast path: clicked pixel itself is a corner.
   if (cx >= 1 && cx < w - 1 && cy >= 1 && cy < h - 1) {
     if (mask[cy * w + cx] && isLikelyIntersection(cx, cy, lineMap)) {
-      return { x: cx / scaleX, y: cy / scaleY };
+      const refined = refineCornerCentroid(cx, cy, lineMap);
+      return { x: refined.x / scaleX, y: refined.y / scaleY };
     }
   }
 
@@ -285,5 +286,51 @@ export function snapToNearestCorner(
   }
 
   if (bestX < 0) return null;
-  return { x: bestX / scaleX, y: bestY / scaleY };
+  // Refine: snap to the centroid of the connected cluster of corner
+  // pixels near (bestX, bestY). MLSD lines are typically 2-3 px wide
+  // because of anti-aliasing, so the first corner pixel we hit on the
+  // expanding shell is usually on the *edge* of the corner blob, not
+  // its geometric centre. Looking at all corner-classified neighbours
+  // within a small window pulls the snap toward the true intersection.
+  const refined = refineCornerCentroid(bestX, bestY, lineMap);
+  return { x: refined.x / scaleX, y: refined.y / scaleY };
+}
+
+/**
+ * Given a corner pixel `(x, y)`, return the centroid of every corner-
+ * classified pixel within a small box around it. This pulls the snap
+ * toward the geometric centre of an antialiased corner blob, instead
+ * of latching onto whichever edge pixel the expanding-shell search
+ * happened to visit first.
+ *
+ * Window size 5 px in line-map space (~7 px on a 1024² MLSD raster
+ * representing a 4032² source — i.e. ~28 src pixels). Big enough to
+ * find the whole corner, small enough not to leak into adjacent
+ * features.
+ */
+function refineCornerCentroid(
+  x: number,
+  y: number,
+  lineMap: LineMapData,
+): { x: number; y: number } {
+  const { width: w, height: h, mask } = lineMap;
+  const win = 5;
+  const x0 = Math.max(1, x - win);
+  const x1 = Math.min(w - 2, x + win);
+  const y0 = Math.max(1, y - win);
+  const y1 = Math.min(h - 2, y + win);
+  let sx = 0;
+  let sy = 0;
+  let n = 0;
+  for (let yy = y0; yy <= y1; yy++) {
+    for (let xx = x0; xx <= x1; xx++) {
+      if (!mask[yy * w + xx]) continue;
+      if (!isLikelyIntersection(xx, yy, lineMap)) continue;
+      sx += xx;
+      sy += yy;
+      n++;
+    }
+  }
+  if (n === 0) return { x, y };
+  return { x: sx / n, y: sy / n };
 }

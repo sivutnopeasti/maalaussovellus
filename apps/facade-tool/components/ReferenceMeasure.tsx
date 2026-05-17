@@ -177,8 +177,11 @@ export default function ReferenceMeasure({ imageDataUrl, onReferenceSet }: Props
         source: img,
         canvasW: canvas.width,
         canvasH: canvas.height,
-        radius: 64,
-        magnification: 2.5,
+        shape: "rounded",
+        width: 160,
+        height: 110,
+        borderRadius: 18,
+        magnification: 1.7,
         accent: "#EF4444",
       });
       ctx.restore();

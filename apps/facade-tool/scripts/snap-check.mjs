@@ -77,6 +77,29 @@ function snapToNearestLine(point, lm, r) {
   return bestX < 0 ? null : { x: bestX, y: bestY };
 }
 
+function refineCornerCentroid(x, y, lm) {
+  const { width: w, height: h, mask } = lm;
+  const win = 5;
+  const x0 = Math.max(1, x - win);
+  const x1 = Math.min(w - 2, x + win);
+  const y0 = Math.max(1, y - win);
+  const y1 = Math.min(h - 2, y + win);
+  let sx = 0;
+  let sy = 0;
+  let n = 0;
+  for (let yy = y0; yy <= y1; yy++) {
+    for (let xx = x0; xx <= x1; xx++) {
+      if (!mask[yy * w + xx]) continue;
+      if (!isLikelyIntersection(xx, yy, lm)) continue;
+      sx += xx;
+      sy += yy;
+      n++;
+    }
+  }
+  if (n === 0) return { x, y };
+  return { x: sx / n, y: sy / n };
+}
+
 function snapToNearestCorner(point, lm, r) {
   const { width: w, height: h, mask } = lm;
   const cx = Math.round(point.x);
@@ -89,7 +112,7 @@ function snapToNearestCorner(point, lm, r) {
     mask[cy * w + cx] &&
     isLikelyIntersection(cx, cy, lm)
   ) {
-    return { x: cx, y: cy };
+    return refineCornerCentroid(cx, cy, lm);
   }
   let bestDist2 = Infinity;
   let bestX = -1;
@@ -122,7 +145,7 @@ function snapToNearestCorner(point, lm, r) {
       for (let y = y0 + 1; y <= y1 - 1; y++) check(x, y);
     }
   }
-  return bestX < 0 ? null : { x: bestX, y: bestY };
+  return bestX < 0 ? null : refineCornerCentroid(bestX, bestY, lm);
 }
 
 // Build a 200×200 mask with two perpendicular line segments meeting
@@ -176,15 +199,13 @@ function check(name, ok, info) {
 }
 
 // 4) Click 15 px away from the corner along a diagonal, with a wide
-//    corner radius — should snap to within 2px of the real corner.
-//    (Exact pixel may be (100,100), (101,100) or (100,99) because the
-//    junction's morphological neighbourhood spans those three pixels;
-//    all three are equally valid corner targets.)
+//    corner radius. The centroid refinement should land us within
+//    1px of the true corner.
 {
   const c = snapToNearestCorner({ x: 115, y: 85 }, lm, 30);
   check(
-    "corner snap lands ≤2px from (100,100)",
-    !!c && Math.abs(c.x - 100) <= 2 && Math.abs(c.y - 100) <= 2,
+    "corner snap (with centroid refinement) ≤1.5px from (100,100)",
+    !!c && Math.abs(c.x - 100) <= 1.5 && Math.abs(c.y - 100) <= 1.5,
     JSON.stringify(c),
   );
 }
@@ -214,14 +235,14 @@ function resolveSnap(raw, cornerR, lineR) {
   const cornerR = diag * 0.12;
   const lineR = diag * 0.05;
 
-  // 6a) Click ~7 px off the corner → expect corner snap within 2px
+  // 6a) Click ~7 px off the corner → expect corner snap within 1.5px
   const r1 = resolveSnap({ x: 95, y: 95 }, cornerR, lineR);
   check(
-    "two-stage ~7px off corner → corner ≤2px",
+    "two-stage ~7px off corner → corner ≤1.5px",
     r1.kind === "corner" &&
       r1.snapped &&
-      Math.abs(r1.snapped.x - 100) <= 2 &&
-      Math.abs(r1.snapped.y - 100) <= 2,
+      Math.abs(r1.snapped.x - 100) <= 1.5 &&
+      Math.abs(r1.snapped.y - 100) <= 1.5,
     `${r1.kind} ${JSON.stringify(r1.snapped)}`,
   );
 
