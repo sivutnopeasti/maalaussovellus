@@ -53,12 +53,15 @@ export default function PolygonSelect({
   mlsdMapUrl,
 }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const canvasWrapperRef = useRef<HTMLDivElement>(null);
   const debugCanvasRef = useRef<HTMLCanvasElement>(null);
   const imageRef = useRef<HTMLImageElement | null>(null);
   const mlsdImageRef = useRef<HTMLImageElement | null>(null);
   const lineMapRef = useRef<LineMapData | null>(null);
   const [lineMapReady, setLineMapReady] = useState(false);
   const [snapEnabled, setSnapEnabled] = useState(true);
+  const [imgDims, setImgDims] = useState({ w: 0, h: 0 });
+  const [containerSize, setContainerSize] = useState({ w: 0, h: 0 });
   const [points, setPoints] = useState<Point[]>([]);
   const [snapHint, setSnapHint] = useState<{ from: Point; to: Point } | null>(
     null,
@@ -82,34 +85,49 @@ export default function PolygonSelect({
     canvasW: canvasSize.w,
     canvasH: canvasSize.h,
   });
-  /** Debug stats published once the MLSD raster is decoded. */
-  const [mlsdStats, setMlsdStats] = useState<{
-    lmW: number;
-    lmH: number;
-    whitePixels: number;
-    whiteRatio: number;
-  } | null>(null);
-  /** Diagnostic info about the most recent click → snap. */
-  const [lastSnap, setLastSnap] = useState<{
-    raw: Point;
-    snapped: Point | null;
-    distPx: number | null;
-    radiusPx: number;
-  } | null>(null);
+  // Debug stats are no longer rendered in the UI — kept in console
+  // logs only.
+
+  // Track wrapper size so the canvas always fits the available area —
+  // both width AND height. Without this the image overflows vertically
+  // on phones.
+  useEffect(() => {
+    const el = canvasWrapperRef.current;
+    if (!el) return;
+    const update = () => {
+      setContainerSize({ w: el.clientWidth, h: el.clientHeight });
+    };
+    update();
+    const observer = new ResizeObserver(update);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
 
   useEffect(() => {
     const img = new Image();
     img.crossOrigin = "anonymous";
     img.onload = () => {
       imageRef.current = img;
-      const container = canvasRef.current?.parentElement;
-      const maxW = container?.clientWidth ?? 640;
-      const s = Math.min(1, maxW / img.width);
-      setScale(s);
-      setCanvasSize({ w: Math.round(img.width * s), h: Math.round(img.height * s) });
+      setImgDims({ w: img.width, h: img.height });
     };
     img.src = imageUrl;
   }, [imageUrl]);
+
+  useEffect(() => {
+    if (imgDims.w === 0 || containerSize.w === 0 || containerSize.h === 0) {
+      return;
+    }
+    const s = Math.min(
+      containerSize.w / imgDims.w,
+      containerSize.h / imgDims.h,
+      1,
+    );
+    setScale(s);
+    setCanvasSize({
+      w: Math.round(imgDims.w * s),
+      h: Math.round(imgDims.h * s),
+    });
+  }, [imgDims, containerSize]);
 
   // Load and decode the M-LSD line map for click snapping. We do this
   // off-screen as soon as the URL is available — typically before the
@@ -126,12 +144,6 @@ export default function PolygonSelect({
         const lm = buildLineMap(img);
         lineMapRef.current = lm;
         mlsdImageRef.current = img;
-        setMlsdStats({
-          lmW: lm.width,
-          lmH: lm.height,
-          whitePixels: lm.whitePixels,
-          whiteRatio: lm.whiteRatio,
-        });
         setLineMapReady(true);
         console.log("[snap] MLSD map decoded", {
           mlsd: `${lm.width}×${lm.height}`,
@@ -487,7 +499,6 @@ export default function PolygonSelect({
       const raw = eventToImage(e);
 
       const { snapped, distPx, radius, kind } = resolveSnap(raw);
-      setLastSnap({ raw, snapped, distPx, radiusPx: radius });
       console.log("[snap] click", {
         raw: `(${raw.x.toFixed(0)}, ${raw.y.toFixed(0)})`,
         snapped: snapped
@@ -529,92 +540,70 @@ export default function PolygonSelect({
     (!reference || reference.pixelsPerMeter <= 0);
 
   return (
-    <div className="space-y-3">
-      <div className="flex items-start gap-2 text-sm">
-        <Hexagon className="w-4 h-4 text-amber-500 mt-0.5 shrink-0" />
+    <div className="flex flex-col h-full min-h-0 gap-2">
+      {/* Compact one-line phase prompt — replaces the long static
+          instruction blocks. Auto-scale + MLSD context are conveyed
+          through the in-canvas labels and the hover preview. */}
+      <div className="flex items-center gap-2 text-sm shrink-0">
+        <Hexagon className="w-4 h-4 text-amber-500 shrink-0" />
         {phase === "drawing" ? (
-          <span className="text-slate-700">
-            Klikkaa talon nurkat <strong>järjestyksessä</strong> — ala vasemmalta, kierry myötäpäivään.
-            {points.length === 0 && " Tarvitaan vähintään 3 pistettä."}
-            {points.length > 0 && points.length < 3 && ` ${points.length} pistettä — lisää vähintään ${3 - points.length} lisää.`}
-            {points.length >= 3 && <span className="text-green-700 font-medium"> {points.length} pistettä — paina Valmis kun kaikki kulmat on merkitty.</span>}
+          <span className="text-slate-700 truncate">
+            {points.length === 0 && (
+              <>
+                Klikkaa <strong>1. nurkka</strong>
+                {usingAutoScale && ", aloita pystysuoralta sivulta"}.
+              </>
+            )}
+            {points.length > 0 && points.length < 3 && (
+              <>
+                {points.length} pistettä — lisää{" "}
+                <strong>{3 - points.length} lisää</strong>.
+              </>
+            )}
+            {points.length >= 3 && (
+              <span className="text-green-700 font-medium">
+                {points.length} pistettä — paina <strong>Valmis</strong>.
+              </span>
+            )}
           </span>
         ) : (
           <span className="text-green-700 font-medium">
-            Julkisivu rajattu — {points.length} pistettä.
+            Rajattu — {points.length} pistettä.
           </span>
         )}
       </div>
 
-      {usingAutoScale && (
-        <div className="px-3 py-2 bg-indigo-50 border border-indigo-200 rounded-lg text-xs text-indigo-700 flex items-start gap-2">
-          <span className="font-bold mt-0.5">⚡</span>
-          <span>
-            Mittakaava johdetaan polygonin pystyreunoista{" "}
-            (talon nurkan korkeus <strong>{autoWallHeightM!.toFixed(2)} m</strong>).
-            {points.length < 2 && (
-              <> Klikkaa ensin pystysuora nurkka ylhäältä alas, niin mitat ilmestyvät.</>
-            )}
-          </span>
-        </div>
-      )}
-
-      {mlsdMapUrl && (
-        <div className="flex items-center justify-between gap-3 px-3 py-2 bg-cyan-50 border border-cyan-200 rounded-lg text-xs">
-          <div className="flex items-center gap-2 text-cyan-800">
-            <Magnet className="w-4 h-4" />
-            <span>
-              <strong>Reunatunnistus</strong>{" "}
-              {!lineMapReady ? (
-                <span className="text-cyan-600">— ladataan…</span>
-              ) : snapEnabled ? (
-                <span>
-                  —{" "}
-                  <span className="text-emerald-700 font-medium">vihreä</span> ={" "}
-                  kulmaan,{" "}
-                  <span className="text-cyan-700 font-medium">syaani</span> ={" "}
-                  viivaan. Hiiren alla oleva piste näyttää kohteen ennen
-                  klikkausta.
-                </span>
-              ) : (
-                <span className="text-cyan-600">— pois käytöstä.</span>
-              )}
-            </span>
-          </div>
-          {lineMapReady && (
-            <button
-              onClick={() => setSnapEnabled((s) => !s)}
-              className={`px-2 py-1 rounded font-medium transition-colors ${
-                snapEnabled
-                  ? "bg-cyan-600 text-white hover:bg-cyan-700"
-                  : "border border-cyan-300 text-cyan-700 hover:bg-cyan-100"
-              }`}
-            >
-              {snapEnabled ? "Päällä" : "Pois"}
-            </button>
-          )}
-        </div>
-      )}
-
-      <div className="relative rounded-xl overflow-hidden border-2 border-slate-200 bg-slate-900">
-        <canvas
-          ref={canvasRef}
-          width={canvasSize.w}
-          height={canvasSize.h}
-          onClick={handleCanvasClick}
-          onMouseMove={handleCanvasMove}
-          onMouseLeave={handleCanvasLeave}
-          {...viewport.eventProps}
-          className={`block w-full select-none ${
-            viewport.isPanning
-              ? "cursor-grabbing"
-              : phase === "drawing"
-                ? "cursor-crosshair"
-                : viewport.zoom > 1
-                  ? "cursor-grab"
-                  : "cursor-default"
-          }`}
-        />
+      {/* Canvas wrapper — flex-1 + min-h-0 + flex centering ensures the
+          canvas always fits the visible area on phones, both width and
+          height. */}
+      <div
+        ref={canvasWrapperRef}
+        className="relative flex-1 min-h-0 rounded-xl overflow-hidden border-2 border-slate-200 bg-slate-900 flex items-center justify-center"
+      >
+        {canvasSize.w > 0 && (
+          <canvas
+            ref={canvasRef}
+            width={canvasSize.w}
+            height={canvasSize.h}
+            onClick={handleCanvasClick}
+            onMouseMove={handleCanvasMove}
+            onMouseLeave={handleCanvasLeave}
+            {...viewport.eventProps}
+            className={`block select-none ${
+              viewport.isPanning
+                ? "cursor-grabbing"
+                : phase === "drawing"
+                  ? "cursor-crosshair"
+                  : viewport.zoom > 1
+                    ? "cursor-grab"
+                    : "cursor-default"
+            }`}
+            style={{
+              maxWidth: "100%",
+              maxHeight: "100%",
+            }}
+          />
+        )}
         {canvasSize.w > 0 && (
           <ZoomControls
             zoom={viewport.zoom}
@@ -622,108 +611,64 @@ export default function PolygonSelect({
             reset={viewport.reset}
           />
         )}
+
+        {/* Snap status pill — floating, takes no vertical space. */}
+        {mlsdMapUrl && lineMapReady && (
+          <button
+            onClick={() => setSnapEnabled((s) => !s)}
+            className={`absolute top-2 left-2 flex items-center gap-1 px-2 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider shadow ${
+              snapEnabled
+                ? "bg-cyan-500/95 text-white"
+                : "bg-slate-900/80 text-cyan-200 border border-cyan-400/60"
+            }`}
+            title={snapEnabled ? "Reunatunnistus päällä" : "Pois käytöstä"}
+          >
+            <Magnet className="w-3 h-3" />
+            {snapEnabled ? "Snap" : "Ei snap"}
+          </button>
+        )}
+
+        {/* Hidden in production — keep the debug canvas mounted so the
+            redraw code keeps running, but visually invisible. */}
+        <canvas
+          ref={debugCanvasRef}
+          width={canvasSize.w}
+          height={canvasSize.h}
+          className="hidden"
+        />
       </div>
 
-      {/* TEMPORARY DEBUG: MLSD line-map view with the same polygon
-          points and edges drawn on top, so we can verify by eye that
-          clicks land on detected building edges. */}
-      {mlsdMapUrl && lineMapReady && (
-        <div className="space-y-1.5">
-          <div className="flex items-center justify-between text-xs">
-            <span className="font-semibold text-cyan-700">
-              MLSD-viivakartta (debug)
-            </span>
-            <span className="text-slate-400">
-              Tunnistetut rakennusreunat + sama polygoni päällä
-            </span>
-          </div>
-
-          {/* Diagnostic stats — helps see WHY snap might fail */}
-          {mlsdStats && (
-            <div className="text-[10px] leading-tight font-mono px-2 py-1.5 bg-slate-50 border border-slate-200 rounded text-slate-600 space-y-0.5">
-              <div>
-                MLSD: <strong>{mlsdStats.lmW}×{mlsdStats.lmH}</strong>{" "}
-                · source: <strong>{imageWidth}×{imageHeight}</strong>{" "}
-                · aspect{" "}
-                {Math.abs(
-                  mlsdStats.lmW / mlsdStats.lmH - imageWidth / imageHeight,
-                ) < 0.01 ? (
-                  <span className="text-green-600">match</span>
-                ) : (
-                  <span className="text-amber-600">
-                    DIFFER (stretch correction active)
-                  </span>
-                )}
-              </div>
-              <div>
-                Valkoisia pikseleitä:{" "}
-                <strong>{mlsdStats.whitePixels.toLocaleString()}</strong>{" "}
-                ({(mlsdStats.whiteRatio * 100).toFixed(2)}%){" "}
-                {mlsdStats.whitePixels < 100 && (
-                  <span className="text-red-600 font-semibold">
-                    — TYHJÄ MASK, snap ei voi toimia
-                  </span>
-                )}
-              </div>
-              {lastSnap && (
-                <div>
-                  Edellinen klikkaus:{" "}
-                  {lastSnap.snapped ? (
-                    <span className="text-green-700">
-                      snäpattiin {lastSnap.distPx?.toFixed(0)} px
-                      (raja {lastSnap.radiusPx.toFixed(0)} px)
-                    </span>
-                  ) : (
-                    <span className="text-red-600">
-                      ei snap — ei viivaa {lastSnap.radiusPx.toFixed(0)} px
-                      säteen sisällä
-                    </span>
-                  )}
-                </div>
-              )}
-            </div>
-          )}
-
-          <div className="relative rounded-xl overflow-hidden border-2 border-cyan-300 bg-black">
-            <canvas
-              ref={debugCanvasRef}
-              width={canvasSize.w}
-              height={canvasSize.h}
-              className="block w-full"
-            />
-          </div>
-        </div>
-      )}
-
-      <div className="flex flex-wrap gap-2">
+      {/* Action bar */}
+      <div className="flex items-center gap-2 shrink-0">
         {phase === "drawing" && points.length >= 3 && (
           <button
             onClick={handleConfirm}
-            className="flex items-center gap-1.5 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 text-sm font-medium"
+            className="flex-1 flex items-center justify-center gap-1.5 px-4 py-3 bg-green-600 text-white rounded-2xl hover:bg-green-700 text-sm font-bold shadow-lg shadow-green-200"
           >
             <Check className="w-4 h-4" />
-            Valmis ({points.length} pistettä)
+            Valmis ({points.length})
           </button>
         )}
         {points.length > 0 && (
           <button
             onClick={handleUndo}
-            className="flex items-center gap-1.5 px-3 py-2 border border-slate-300 text-slate-600 rounded-lg hover:bg-slate-50 text-sm"
+            className="flex items-center justify-center gap-1 px-3 py-2.5 border border-slate-300 text-slate-600 rounded-xl hover:bg-slate-50 text-sm"
+            aria-label="Poista viimeinen piste"
           >
             <Undo2 className="w-4 h-4" />
-            Poista viimeinen
           </button>
         )}
         {points.length > 0 && (
           <button
             onClick={handleReset}
-            className="flex items-center gap-1.5 px-3 py-2 border border-slate-200 text-slate-500 rounded-lg hover:bg-slate-50 text-sm"
+            className="flex items-center justify-center gap-1 px-3 py-2.5 border border-slate-200 text-slate-500 rounded-xl hover:bg-slate-50 text-sm"
+            aria-label="Aloita alusta"
           >
             <RotateCcw className="w-4 h-4" />
-            Aloita alusta
           </button>
         )}
       </div>
+
     </div>
   );
 }

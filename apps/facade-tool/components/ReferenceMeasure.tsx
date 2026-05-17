@@ -11,16 +11,19 @@ interface Props {
   onReferenceSet: (data: ReferenceData) => void;
 }
 
-type Phase = "idle" | "point1" | "point2" | "input";
+type Phase = "point1" | "point2" | "input";
 
 export default function ReferenceMeasure({ imageDataUrl, onReferenceSet }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const canvasWrapperRef = useRef<HTMLDivElement>(null);
   const imageRef = useRef<HTMLImageElement | null>(null);
-  const [phase, setPhase] = useState<Phase>("idle");
+  const [phase, setPhase] = useState<Phase>("point1");
   const [points, setPoints] = useState<Point[]>([]);
   const [meters, setMeters] = useState("");
   const [canvasSize, setCanvasSize] = useState({ w: 0, h: 0 });
   const [scale, setScale] = useState(1);
+  const [imgDims, setImgDims] = useState({ w: 0, h: 0 });
+  const [containerSize, setContainerSize] = useState({ w: 0, h: 0 });
 
   const viewport = useCanvasViewport({
     imageScale: scale,
@@ -28,18 +31,46 @@ export default function ReferenceMeasure({ imageDataUrl, onReferenceSet }: Props
     canvasH: canvasSize.h,
   });
 
+  // Track wrapper size so the canvas always fits the available area —
+  // both width AND height. Previously we only used the width, which
+  // caused the image to overflow vertically on phones.
+  useEffect(() => {
+    const el = canvasWrapperRef.current;
+    if (!el) return;
+    const update = () => {
+      setContainerSize({ w: el.clientWidth, h: el.clientHeight });
+    };
+    update();
+    const observer = new ResizeObserver(update);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
+
   useEffect(() => {
     const img = new Image();
     img.onload = () => {
       imageRef.current = img;
-      const container = canvasRef.current?.parentElement;
-      const maxW = container?.clientWidth ?? 640;
-      const s = Math.min(1, maxW / img.width);
-      setScale(s);
-      setCanvasSize({ w: Math.round(img.width * s), h: Math.round(img.height * s) });
+      setImgDims({ w: img.width, h: img.height });
     };
     img.src = imageDataUrl;
   }, [imageDataUrl]);
+
+  // Recompute canvas size whenever the image OR the container resizes.
+  useEffect(() => {
+    if (imgDims.w === 0 || containerSize.w === 0 || containerSize.h === 0) {
+      return;
+    }
+    const s = Math.min(
+      containerSize.w / imgDims.w,
+      containerSize.h / imgDims.h,
+      1,
+    );
+    setScale(s);
+    setCanvasSize({
+      w: Math.round(imgDims.w * s),
+      h: Math.round(imgDims.h * s),
+    });
+  }, [imgDims, containerSize]);
 
   const redraw = useCallback(() => {
     const canvas = canvasRef.current;
@@ -147,65 +178,63 @@ export default function ReferenceMeasure({ imageDataUrl, onReferenceSet }: Props
   const reset = () => {
     setPoints([]);
     setMeters("");
-    setPhase("idle");
+    setPhase("point1");
     viewport.reset();
   };
 
   return (
-    <div className="space-y-3">
-      <div className="flex flex-col gap-1 text-sm text-slate-600">
-        <div className="flex items-start gap-2">
-          <Ruler className="w-4 h-4 text-blue-600 mt-0.5 shrink-0" />
-          {phase === "idle" && (
-            <span>
-              Piirrä viiva pitkin jotain <strong>tunnetun mittaista</strong> rakennetta —
-              esim. ulko-oven leveys (0,9 m) tai korkeus (2,0 m), sokkelin yläreuna,
-              ikkuna. Viiva antaa mittakaavan koko kuvalle.
-              <span className="block mt-1 text-xs text-slate-500">
-                Tarkin tulos saadaan <strong>vaakasuoralla</strong> viivalla (esim. sokkelin reuna).
-                Pystysuora viiva toimii myös, jos kuva on otettu suoraan edestä.
-              </span>
-              <span className="block mt-1 text-xs text-cyan-700">
-                Vinkki: Zoomaa lähemmäs nappia (+) tai sormillasi nipistämällä —
-                pisteet pysyvät tarkkoina ja ovat helpompia osua kohdalleen.
-              </span>
-            </span>
-          )}
-          {phase === "point1" && (
-            <span className="font-medium text-blue-600">
-              Klikkaa viivan <strong>alkupiste</strong>.
-            </span>
-          )}
-          {phase === "point2" && (
-            <span className="font-medium text-blue-600">
-              Klikkaa viivan <strong>loppupiste</strong>.
-            </span>
-          )}
-          {phase === "input" && (
-            <span className="font-medium text-green-600">
-              Syötä viivan todellinen pituus metreissä.
-            </span>
-          )}
-        </div>
+    <div className="flex flex-col h-full min-h-0 gap-2">
+      {/* Compact one-line phase prompt — replaces the long static
+          instruction block. Long-form guidance is available via the
+          "Ohjeet" button in the page header. */}
+      <div className="flex items-center gap-2 text-sm shrink-0">
+        <Ruler className="w-4 h-4 text-blue-600 shrink-0" />
+        {phase === "point1" && (
+          <span className="text-blue-700 font-medium">
+            Klikkaa viivan <strong>alkupiste</strong> (esim. oven vasen reuna).
+          </span>
+        )}
+        {phase === "point2" && (
+          <span className="text-blue-700 font-medium">
+            Klikkaa viivan <strong>loppupiste</strong>.
+          </span>
+        )}
+        {phase === "input" && (
+          <span className="text-green-700 font-medium">
+            Syötä viivan pituus metreissä.
+          </span>
+        )}
       </div>
 
-      <div className="relative rounded-xl overflow-hidden border-2 border-slate-200 bg-slate-900">
-        <canvas
-          ref={canvasRef}
-          width={canvasSize.w}
-          height={canvasSize.h}
-          onClick={handleCanvasClick}
-          {...viewport.eventProps}
-          className={`block w-full select-none ${
-            viewport.isPanning
-              ? "cursor-grabbing"
-              : phase === "point1" || phase === "point2"
-                ? "cursor-crosshair"
-                : viewport.zoom > 1
-                  ? "cursor-grab"
-                  : "cursor-default"
-          }`}
-        />
+      {/* Canvas wrapper — flex-1 + min-h-0 makes it shrink to fit the
+          available space. The canvas inside is sized in pixels so it
+          respects both width AND height of this container. */}
+      <div
+        ref={canvasWrapperRef}
+        className="relative flex-1 min-h-0 rounded-xl overflow-hidden border-2 border-slate-200 bg-slate-900 flex items-center justify-center"
+      >
+        {canvasSize.w > 0 && (
+          <canvas
+            ref={canvasRef}
+            width={canvasSize.w}
+            height={canvasSize.h}
+            onClick={handleCanvasClick}
+            {...viewport.eventProps}
+            className={`block select-none ${
+              viewport.isPanning
+                ? "cursor-grabbing"
+                : phase === "point1" || phase === "point2"
+                  ? "cursor-crosshair"
+                  : viewport.zoom > 1
+                    ? "cursor-grab"
+                    : "cursor-default"
+            }`}
+            style={{
+              maxWidth: "100%",
+              maxHeight: "100%",
+            }}
+          />
+        )}
         {canvasSize.w > 0 && (
           <ZoomControls
             zoom={viewport.zoom}
@@ -215,52 +244,43 @@ export default function ReferenceMeasure({ imageDataUrl, onReferenceSet }: Props
         )}
       </div>
 
-      <div className="flex flex-wrap items-center gap-2">
-        {phase === "idle" && (
+      {/* Inline controls — only the meter input when we're collecting
+          the length. The "Vahvista" confirm + reset live in the page
+          footer so this section stays compact. */}
+      {phase === "input" && (
+        <div className="flex items-center gap-2 shrink-0">
+          <input
+            type="number"
+            min="0.1"
+            step="0.1"
+            value={meters}
+            onChange={(e) => setMeters(e.target.value)}
+            placeholder="esim. 0,9"
+            className="flex-1 px-3 py-2.5 border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500"
+            autoFocus
+            onKeyDown={(e) => e.key === "Enter" && handleConfirm()}
+          />
+          <span className="text-sm text-slate-600 shrink-0">m</span>
           <button
-            onClick={() => setPhase("point1")}
-            className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors text-sm font-medium"
+            onClick={handleConfirm}
+            disabled={!meters || parseFloat(meters) <= 0}
+            className="flex items-center gap-1 px-4 py-2.5 bg-green-600 text-white rounded-xl hover:bg-green-700 disabled:opacity-40 disabled:cursor-not-allowed text-sm font-semibold shrink-0"
           >
-            <Ruler className="w-4 h-4" />
-            Aloita mittaus
+            <Check className="w-4 h-4" />
+            OK
           </button>
-        )}
+        </div>
+      )}
 
-        {phase === "input" && (
-          <div className="flex items-center gap-2">
-            <input
-              type="number"
-              min="0.1"
-              step="0.1"
-              value={meters}
-              onChange={(e) => setMeters(e.target.value)}
-              placeholder="esim. 5.4"
-              className="w-32 px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-              autoFocus
-              onKeyDown={(e) => e.key === "Enter" && handleConfirm()}
-            />
-            <span className="text-sm text-slate-600">metriä</span>
-            <button
-              onClick={handleConfirm}
-              disabled={!meters || parseFloat(meters) <= 0}
-              className="flex items-center gap-1 px-3 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors text-sm font-medium"
-            >
-              <Check className="w-4 h-4" />
-              Vahvista
-            </button>
-          </div>
-        )}
-
-        {phase !== "idle" && (
-          <button
-            onClick={reset}
-            className="flex items-center gap-1 px-3 py-2 text-slate-600 border border-slate-300 rounded-lg hover:bg-slate-50 transition-colors text-sm"
-          >
-            <RotateCcw className="w-4 h-4" />
-            Aloita alusta
-          </button>
-        )}
-      </div>
+      {points.length > 0 && phase !== "input" && (
+        <button
+          onClick={reset}
+          className="self-start flex items-center gap-1 px-3 py-1.5 text-slate-500 hover:text-slate-700 text-xs"
+        >
+          <RotateCcw className="w-3.5 h-3.5" />
+          Aloita alusta
+        </button>
+      )}
     </div>
   );
 }

@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import dynamic from "next/dynamic";
-import { ArrowLeft, Check } from "lucide-react";
+import { ArrowLeft, Check, HelpCircle } from "lucide-react";
 
 import ReferenceMeasure from "@/components/ReferenceMeasure";
 import PolygonSelect from "@/components/PolygonSelect";
@@ -86,6 +86,11 @@ export default function HomePage() {
     ANALYSING_MESSAGES.upload,
   );
   const [error, setError] = useState<string | null>(null);
+  /** When true, the instruction modal for the CURRENT step is shown
+   *  on top of the active screen (triggered by the "Ohjeet" button in
+   *  the header). The modal closes the same way the auto-shown one
+   *  does — by tapping the continue button. */
+  const [showHelp, setShowHelp] = useState(false);
 
   // ── Mount: restore project + stored wall height ───────────────────────────
   useEffect(() => {
@@ -97,6 +102,11 @@ export default function HomePage() {
       wallHeightRef.current = wh.valueM;
     }
   }, []);
+
+  // Auto-close any help modal whenever the step changes.
+  useEffect(() => {
+    setShowHelp(false);
+  }, [step]);
 
   // ── Helpers ───────────────────────────────────────────────────────────────
   const resetCurrentPhoto = useCallback(() => {
@@ -390,6 +400,13 @@ export default function HomePage() {
           onReferenceSet={handleReferenceSet}
           onConfirm={handleReferenceConfirm}
           onBack={handleBackToCamera}
+          onShowHelp={() => setShowHelp(true)}
+        />
+      )}
+      {step === "ref-draw" && showHelp && (
+        <InstructionModal
+          kind="reference"
+          onContinue={() => setShowHelp(false)}
         />
       )}
 
@@ -419,7 +436,15 @@ export default function HomePage() {
           }
           onPolygonSet={handlePolygonSet}
           onBack={handleBackToCamera}
+          onShowHelp={() => setShowHelp(true)}
           error={error}
+        />
+      )}
+      {step === "poly-draw" && showHelp && (
+        <InstructionModal
+          kind="polygon"
+          onContinue={() => setShowHelp(false)}
+          autoMode={autoMode}
         />
       )}
 
@@ -472,6 +497,7 @@ interface ReferenceDrawProps {
   onReferenceSet: (data: ReferenceData) => void;
   onConfirm: () => void;
   onBack: () => void;
+  onShowHelp: () => void;
 }
 
 function ReferenceDrawScreen({
@@ -480,6 +506,7 @@ function ReferenceDrawScreen({
   onReferenceSet,
   onConfirm,
   onBack,
+  onShowHelp,
 }: ReferenceDrawProps) {
   const canConfirm = !!reference && reference.pixelsPerMeter > 0;
   return (
@@ -494,18 +521,20 @@ function ReferenceDrawScreen({
         </button>
         <div className="flex-1 min-w-0">
           <p className="font-semibold text-sm text-slate-900 leading-tight">
-            Piirrä referenssimitta
-          </p>
-          <p className="text-[11px] text-slate-500 truncate">
-            Esim. oven leveys 0,9 m
+            Referenssimitta
           </p>
         </div>
-        <span className="text-[10px] uppercase tracking-wide bg-blue-100 text-blue-700 font-bold px-2 py-0.5 rounded-full">
-          2 / 3
-        </span>
+        <button
+          onClick={onShowHelp}
+          className="flex items-center gap-1 px-2.5 py-1.5 rounded-full bg-blue-50 text-blue-700 text-xs font-semibold hover:bg-blue-100"
+          aria-label="Näytä ohjeet"
+        >
+          <HelpCircle className="w-4 h-4" />
+          Ohjeet
+        </button>
       </header>
 
-      <div className="flex-1 min-h-0 overflow-hidden p-3">
+      <div className="flex-1 min-h-0 overflow-hidden p-2.5">
         <ReferenceMeasure
           imageDataUrl={imageDataUrl}
           onReferenceSet={onReferenceSet}
@@ -520,7 +549,7 @@ function ReferenceDrawScreen({
         >
           <Check className="w-5 h-5" />
           {canConfirm
-            ? `Hyvä — referenssi ${reference!.meters} m vahvistettu`
+            ? `Jatka — ${reference!.meters} m`
             : "Piirrä viiva ja anna mitta"}
         </button>
       </div>
@@ -538,6 +567,7 @@ interface PolygonDrawProps {
   autoWallHeightM?: number;
   onPolygonSet: (data: PolygonData) => void;
   onBack: () => void;
+  onShowHelp: () => void;
   error: string | null;
 }
 
@@ -549,6 +579,7 @@ function PolygonDrawScreen({
   autoWallHeightM,
   onPolygonSet,
   onBack,
+  onShowHelp,
   error,
 }: PolygonDrawProps) {
   return (
@@ -565,13 +596,15 @@ function PolygonDrawScreen({
           <p className="font-semibold text-sm text-slate-900 leading-tight">
             Rajaa maalattava alue
           </p>
-          <p className="text-[11px] text-slate-500 truncate">
-            Klikkaa nurkat järjestyksessä — paina <strong>Valmis</strong> kun valmis
-          </p>
         </div>
-        <span className="text-[10px] uppercase tracking-wide bg-blue-100 text-blue-700 font-bold px-2 py-0.5 rounded-full">
-          3 / 3
-        </span>
+        <button
+          onClick={onShowHelp}
+          className="flex items-center gap-1 px-2.5 py-1.5 rounded-full bg-blue-50 text-blue-700 text-xs font-semibold hover:bg-blue-100"
+          aria-label="Näytä ohjeet"
+        >
+          <HelpCircle className="w-4 h-4" />
+          Ohjeet
+        </button>
       </header>
 
       {error && (
@@ -580,7 +613,7 @@ function PolygonDrawScreen({
         </div>
       )}
 
-      <div className="flex-1 min-h-0 overflow-hidden p-3">
+      <div className="flex-1 min-h-0 overflow-hidden p-2.5">
         {imageDataUrl && imageDims.w > 0 && (
           <PolygonSelect
             imageUrl={imageDataUrl}
