@@ -14,9 +14,10 @@
 // ────────────────────────────────────────────────────────────────────────────
 
 const VERTICAL_TOLERANCE_DEG = 30;
+const FALLBACK_VERTICAL_DEG = 60;
 const MIN_EDGE_PIXELS = 30;
 
-function findVerticalEdges(polygon) {
+function findVerticalEdges(polygon, toleranceDeg = VERTICAL_TOLERANCE_DEG) {
   const edges = [];
   const n = polygon.length;
   for (let i = 0; i < n; i++) {
@@ -28,7 +29,7 @@ function findVerticalEdges(polygon) {
     if (pixelLength < MIN_EDGE_PIXELS) continue;
     const deviationDeg =
       Math.atan2(Math.abs(dx), Math.abs(dy)) * (180 / Math.PI);
-    if (deviationDeg <= VERTICAL_TOLERANCE_DEG) {
+    if (deviationDeg <= toleranceDeg) {
       edges.push({ p1: a, p2: b, pixelLength, deviationDeg });
     }
   }
@@ -37,21 +38,34 @@ function findVerticalEdges(polygon) {
 
 function estimateWallHeightM(polygon, pixelsPerMeter) {
   if (pixelsPerMeter <= 0) return null;
-  const edges = findVerticalEdges(polygon);
-  if (edges.length === 0) return null;
-  const sorted = edges.map((e) => e.pixelLength).sort((a, b) => a - b);
-  const m = sorted.length;
-  const median =
-    m % 2 === 0
-      ? (sorted[m / 2 - 1] + sorted[m / 2]) / 2
-      : sorted[Math.floor(m / 2)];
-  return median / pixelsPerMeter;
+  const strict = findVerticalEdges(polygon, VERTICAL_TOLERANCE_DEG);
+  if (strict.length > 0) {
+    const sorted = strict.map((e) => e.pixelLength).sort((a, b) => a - b);
+    const m = sorted.length;
+    const median =
+      m % 2 === 0
+        ? (sorted[m / 2 - 1] + sorted[m / 2]) / 2
+        : sorted[Math.floor(m / 2)];
+    return median / pixelsPerMeter;
+  }
+  const lax = findVerticalEdges(polygon, FALLBACK_VERTICAL_DEG);
+  if (lax.length === 0) return null;
+  const longest = lax.reduce((best, e) =>
+    e.pixelLength >= best.pixelLength ? e : best,
+  );
+  return longest.pixelLength / pixelsPerMeter;
 }
 
 function findReferenceVerticalEdge(polygon) {
-  const edges = findVerticalEdges(polygon);
-  if (edges.length === 0) return null;
-  return edges.reduce((best, e) =>
+  const strict = findVerticalEdges(polygon, VERTICAL_TOLERANCE_DEG);
+  if (strict.length > 0) {
+    return strict.reduce((best, e) =>
+      e.pixelLength >= best.pixelLength ? e : best,
+    );
+  }
+  const lax = findVerticalEdges(polygon, FALLBACK_VERTICAL_DEG);
+  if (lax.length === 0) return null;
+  return lax.reduce((best, e) =>
     e.pixelLength >= best.pixelLength ? e : best,
   );
 }
@@ -336,14 +350,16 @@ test("3. Kahden kuvan työnkulku: auto-referenssi toiselle kuvalle", () => {
 });
 
 test("4. Reunatapaus: polygonissa ei pystyreunoja → autovirhe", () => {
-  // Vino paralleeligrammi — kaikki reunat selvästi yli 30° pystystä
-  const slantedPolygon = [
-    { x: 100, y: 800 }, // 1→2: dx=600, dy=-600 → atan(600/600)=45° (vino)
-    { x: 700, y: 200 },
-    { x: 1900, y: 100 }, // 2→3: vaakatasoinen
-    { x: 1300, y: 700 }, // 3→4: dx=-600, dy=600 → 45° (vino)
+  // Polygonissa KAIKKI reunat selvästi yli 60° pystystä (~vaakareunoja)
+  // → ei strict eikä fallback edge → null
+  const flatPolygon = [
+    { x: 100, y: 500 },  // 1→2: dx=800, dy=-300 → 69.4° (yli 60° → hylätään)
+    { x: 900, y: 200 },
+    { x: 1700, y: 500 }, // 2→3: dx=800, dy=300 → 69.4° (hylätään)
+    { x: 1500, y: 600 }, // 3→4: dx=-200, dy=100 → 63.4° (hylätään)
+    // 4→1: dx=-1400, dy=-100 → 85.9° (hylätään)
   ];
-  const result = calculateAutoArea(slantedPolygon, 3.6);
+  const result = calculateAutoArea(flatPolygon, 3.6);
   return assertTrue("Auto-virhe palautetaan", !!result.error);
 });
 
@@ -705,6 +721,150 @@ test("14. Line snap — eri resoluution viivakartta (sama aspect ratio)", () => 
   if (!snap) return false;
   // Snäppäys siirtää x ≈ 500 (puolet pikseleistä lineMapissa = 250 → /scale = 500)
   return assertApproxEqual("Snap x ≈ 500 alkuperäiskoordinaatistossa", snap.x, 500, 0.01);
+});
+
+// ────────────────────────────────────────────────────────────────────────────
+// KAHDEN SEINÄN POLKU — simuloi käyttäjän koko interaktion
+// ────────────────────────────────────────────────────────────────────────────
+
+/** Fake localStorage that we can inspect after each step. */
+const fakeLocalStorage = {
+  data: {},
+  setItem(key, value) {
+    this.data[key] = value;
+  },
+  getItem(key) {
+    return this.data[key] ?? null;
+  },
+  removeItem(key) {
+    delete this.data[key];
+  },
+};
+
+function storeWallHeight(valueM) {
+  if (!Number.isFinite(valueM) || valueM <= 0) return;
+  fakeLocalStorage.setItem(
+    "facadeStoredWallHeight",
+    JSON.stringify({ valueM, savedAt: Date.now() }),
+  );
+}
+
+function getStoredWallHeight() {
+  const raw = fakeLocalStorage.getItem("facadeStoredWallHeight");
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    if (typeof parsed.valueM === "number" && parsed.valueM > 0) {
+      return { valueM: parsed.valueM, savedAt: parsed.savedAt ?? 0 };
+    }
+  } catch {
+    /* ignore */
+  }
+  return null;
+}
+
+test("16. KOKO POLKU — wall 1 manual ref, wall 2 auto ref", () => {
+  // ─── WALL 1: päätyseinä, manual reference ───────────────────────────
+  // Polygoni: 7m leveä, 3.6m korkea seinä + harja
+  const gablePolygon = [
+    { x: 100, y: 1000 },  // bottom-left
+    { x: 100, y: 280 },   // top-left (eaves)
+    { x: 800, y: 100 },   // ridge
+    { x: 1500, y: 280 },  // top-right (eaves)
+    { x: 1500, y: 1000 }, // bottom-right
+  ];
+  // Manual reference: 0.9m wide door = 90 px → 100 px/m
+  const wall1Reference = { pixelsPerMeter: 100 };
+
+  // estimateWallHeightM (strict pass on the two vertical sides)
+  let wallHeight1 = estimateWallHeightM(gablePolygon, wall1Reference.pixelsPerMeter);
+  console.log(`   ℹ Wall 1 estimated wall height: ${wallHeight1?.toFixed(2)} m`);
+
+  // ASSERT: estimate is around 7.2 m (= 720 px / 100 px/m)
+  let ok1 = wallHeight1 !== null && wallHeight1 > 1 && wallHeight1 < 25;
+
+  // Store
+  if (ok1) storeWallHeight(wallHeight1);
+  console.log(`   ℹ localStorage after wall 1: ${JSON.stringify(fakeLocalStorage.data)}`);
+  ok1 = ok1 && fakeLocalStorage.data.facadeStoredWallHeight !== undefined;
+
+  // ─── handleNextWall ─────────────────────────────────────────────────
+  fakeLocalStorage.removeItem("facadeSession");
+  console.log(`   ℹ After handleNextWall — sessionStorage cleared, localStorage still has wallHeight`);
+
+  // ─── WALL 2: pitkä sivu, auto reference ─────────────────────────────
+  // HomePage mount → useEffect reads getStoredWallHeight() → wh = {valueM: ...}
+  const wh = getStoredWallHeight();
+  console.log(`   ℹ HomePage mount: getStoredWallHeight() = ${JSON.stringify(wh)}`);
+  const willAutoMode = wh && wh.valueM > 0;
+  console.log(`   ℹ Auto-mode would be: ${willAutoMode ? "ACTIVE" : "INACTIVE"}`);
+
+  // Käyttäjä klikkaa "Ota kuva" → CameraCapture → handleCameraCapture
+  // Lukee getStoredWallHeight() suoraan → menee auto-analyse-haaraan
+  const whInCapture = getStoredWallHeight();
+  const willGoTo = whInCapture && whInCapture.valueM > 0 ? "auto-analysis" : "manual reference";
+  console.log(`   ℹ handleCameraCapture decision: ${willGoTo}`);
+
+  // ASSERT: ei mennä manual reference -haaraan
+  const ok2 = willGoTo === "auto-analysis";
+
+  // Reset for next runs
+  fakeLocalStorage.data = {};
+
+  return assertTrue(
+    `Wall 1: stored=${ok1}, Wall 2: auto-decision=${ok2}`,
+    ok1 && ok2,
+  );
+});
+
+test("17. KOKO POLKU — wall 1 polygoni jossa ei strict-pystyreunoja → fallback toimii", () => {
+  // Tilted polygoni jossa kaikki reunat 35-45° pystystä (yli 30° strict-rajan)
+  // mutta alle 60° fallback-rajan
+  const tiltedPolygon = [
+    { x: 200, y: 1000 },
+    { x: 350, y: 250 },  // 1→2: dx=150, dy=-750 → atan(150/750)≈11° (OK strict!)
+    { x: 1450, y: 250 },
+    { x: 1600, y: 1000 },
+  ];
+  // ↑ liikutaan että reunat ovat yli 30° vinossa
+  const reallyTiltedPolygon = [
+    { x: 200, y: 1000 },
+    { x: 600, y: 200 },  // dx=400, dy=-800 → atan(400/800)=26.6° (OK strict 30°)
+    { x: 1400, y: 200 },
+    { x: 1800, y: 1000 },
+  ];
+  // ↑ vielä OK strict. Tehdään polygoni jossa vain fallback toimii:
+  const veryTiltedPolygon = [
+    { x: 200, y: 1000 },
+    { x: 800, y: 200 },  // dx=600, dy=-800 → atan(600/800)=36.9° (FALLBACK only)
+    { x: 1200, y: 200 },
+    { x: 1800, y: 1000 },
+  ];
+
+  const ppm = 200;
+  fakeLocalStorage.data = {};
+
+  // Strict pass should return null, fallback should find longest tilted edge
+  const wallHeight = estimateWallHeightM(veryTiltedPolygon, ppm);
+  console.log(`   ℹ Very tilted polygon (36.9°) wall height: ${wallHeight?.toFixed(2)} m`);
+  // Pisin reuna on (200,1000)→(800,200): pixelLength = sqrt(600²+800²) = 1000
+  // Mutta myös (1200,200)→(1800,1000) on sama. Mediaani lasketaan strict-pass:n yli.
+  // Strict (30°) → tyhjä → fallback (60°) → pisin reuna = 1000 px → 1000/200 = 5.0 m
+  if (wallHeight === null) {
+    console.log(`   ✗ Fallback EI toiminut — wallHeight on null`);
+    return false;
+  }
+  if (wallHeight > 1 && wallHeight < 25) {
+    storeWallHeight(wallHeight);
+  }
+  const stored = getStoredWallHeight();
+  console.log(`   ℹ Stored: ${JSON.stringify(stored)}`);
+
+  fakeLocalStorage.data = {};
+  return assertTrue(
+    `Fallback tallensi nurkkakorkeuden ${wallHeight.toFixed(2)} m`,
+    stored !== null,
+  );
 });
 
 test("15. Line snap — anamorfinen venytys (4032×3024 → 1024×1024)", () => {

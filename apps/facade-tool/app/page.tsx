@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   Building2,
@@ -68,43 +68,23 @@ export default function HomePage() {
   const [autoMode, setAutoMode] = useState(false);
   const [cameraOpen, setCameraOpen] = useState(false);
   const [introShown, setIntroShown] = useState(false);
-  const cameraAutoOpenedRef = useRef(false);
 
-  // Load persisted project + wall height on mount
+  // Load persisted project + wall height on mount. The camera is NOT
+  // auto-opened: we always show the capture-step UI first so the user
+  // can see the auto-reference status (green/amber banner) before
+  // taking the next photo. This eliminates the long-standing confusion
+  // where the camera covered the diagnostic banner and the user couldn't
+  // tell why the app fell back to manual reference.
   useEffect(() => {
     const wh = getStoredWallHeight();
     setStoredWallHeight(wh);
     const proj = getProject();
     setProject(proj);
-
-    // If we have a stored wall height (= previous measurement exists),
-    // skip the intro and open the camera immediately. Otherwise show a
-    // short intro the first time so the user knows what's happening.
-    if (wh && !cameraAutoOpenedRef.current) {
-      cameraAutoOpenedRef.current = true;
-      // Auto-enter auto-mode for subsequent measurements — UNLESS the
-      // temporary FORCE_MANUAL_REFERENCE flag is on, in which case we
-      // always go through the manual reference step for verification.
-      if (!FORCE_MANUAL_REFERENCE) {
-        setAutoMode(true);
-        setReference(PLACEHOLDER_REFERENCE);
-      }
-      setCameraOpen(true);
-      setIntroShown(true);
-    } else if (!wh) {
-      setIntroShown(true);
+    if (wh && !FORCE_MANUAL_REFERENCE) {
+      setAutoMode(true);
+      setReference(PLACEHOLDER_REFERENCE);
     }
-  }, []);
-
-  // Allow `/?camera=1` query to force the camera to open (e.g. when navigated
-  // here from the result page after "Mittaa seuraava seinä").
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    const params = new URLSearchParams(window.location.search);
-    if (params.get("camera") === "1" && !cameraAutoOpenedRef.current) {
-      cameraAutoOpenedRef.current = true;
-      setCameraOpen(true);
-    }
+    setIntroShown(true);
   }, []);
 
   const wallCount = project?.measurements.length ?? 0;
