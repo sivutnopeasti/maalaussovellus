@@ -31,12 +31,16 @@ export interface LineMapData {
 /**
  * Decode an HTMLImageElement (already loaded) of an M-LSD raster into a
  * compact `LineMapData` ready for snapping. We treat anything brighter
- * than `threshold` (default 128) as "line".
+ * than `threshold` (default 80, lowered from 128 to also pick up
+ * anti-aliased / semi-transparent line edges) as "line".
+ *
+ * Returns extra diagnostic stats so the UI can show whether the raster
+ * actually contains any detected lines.
  */
 export function buildLineMap(
   img: HTMLImageElement,
-  threshold = 128,
-): LineMapData {
+  threshold = 80,
+): LineMapData & { whitePixels: number; whiteRatio: number } {
   const w = img.naturalWidth;
   const h = img.naturalHeight;
   const canvas = document.createElement("canvas");
@@ -46,11 +50,21 @@ export function buildLineMap(
   ctx.drawImage(img, 0, 0);
   const rgba = ctx.getImageData(0, 0, w, h).data;
   const mask = new Uint8Array(w * h);
+  let whiteCount = 0;
   for (let i = 0, j = 0; i < rgba.length; i += 4, j++) {
     const lum = 0.299 * rgba[i] + 0.587 * rgba[i + 1] + 0.114 * rgba[i + 2];
-    mask[j] = lum > threshold ? 1 : 0;
+    if (lum > threshold) {
+      mask[j] = 1;
+      whiteCount++;
+    }
   }
-  return { width: w, height: h, mask };
+  return {
+    width: w,
+    height: h,
+    mask,
+    whitePixels: whiteCount,
+    whiteRatio: whiteCount / (w * h),
+  };
 }
 
 /**
@@ -59,25 +73,30 @@ export function buildLineMap(
  * Returns `null` if no line pixel is found inside the search disc. Both
  * input and output coordinates are in original-image pixels.
  *
- * The `point` and `lineMap` may use different coordinate systems if the
- * line map was produced at a different resolution than the source image
- * — pass `scale = lineMapWidth / sourceImageWidth` (etc.) when that's
- * the case so the radius is expressed in source-image pixels.
+ * If the line map was produced at a different resolution than the
+ * source image (e.g. Fal's MLSD always emits 1024×1024 even for
+ * non-square inputs), pass `scaleX = lineMapWidth / sourceImageWidth`
+ * AND `scaleY = lineMapHeight / sourceImageHeight`. When they differ
+ * the lookup correctly accounts for the (possibly anamorphic) stretch.
  */
 export function snapToNearestLine(
   point: Point,
   lineMap: LineMapData,
   maxRadiusPx: number,
-  scale = 1,
+  scaleX = 1,
+  scaleY = scaleX,
 ): Point | null {
   const { width: w, height: h, mask } = lineMap;
-  const cx = Math.round(point.x * scale);
-  const cy = Math.round(point.y * scale);
-  const r = Math.max(1, Math.round(maxRadiusPx * scale));
+  const cx = Math.round(point.x * scaleX);
+  const cy = Math.round(point.y * scaleY);
+  // Radius in line-map pixels — use the smaller of the two scales so the
+  // search disc never extends further than `maxRadiusPx` source pixels
+  // in either direction.
+  const r = Math.max(1, Math.round(maxRadiusPx * Math.min(scaleX, scaleY)));
 
   // Fast path: clicked pixel is already on a line.
   if (cx >= 0 && cx < w && cy >= 0 && cy < h && mask[cy * w + cx]) {
-    return { x: cx / scale, y: cy / scale };
+    return { x: cx / scaleX, y: cy / scaleY };
   }
 
   // Expanding square shells. We track the closest hit by Euclidean
@@ -136,7 +155,7 @@ export function snapToNearestLine(
   }
 
   if (bestX < 0) return null;
-  return { x: bestX / scale, y: bestY / scale };
+  return { x: bestX / scaleX, y: bestY / scaleY };
 }
 
 /**

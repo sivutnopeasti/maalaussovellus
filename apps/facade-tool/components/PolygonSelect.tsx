@@ -59,6 +59,20 @@ export default function PolygonSelect({
   const [canvasSize, setCanvasSize] = useState({ w: 0, h: 0 });
   const [scale, setScale] = useState(1);
   const [phase, setPhase] = useState<Phase>("drawing");
+  /** Debug stats published once the MLSD raster is decoded. */
+  const [mlsdStats, setMlsdStats] = useState<{
+    lmW: number;
+    lmH: number;
+    whitePixels: number;
+    whiteRatio: number;
+  } | null>(null);
+  /** Diagnostic info about the most recent click → snap. */
+  const [lastSnap, setLastSnap] = useState<{
+    raw: Point;
+    snapped: Point | null;
+    distPx: number | null;
+    radiusPx: number;
+  } | null>(null);
 
   useEffect(() => {
     const img = new Image();
@@ -86,21 +100,36 @@ export default function PolygonSelect({
     img.onload = () => {
       if (cancelled) return;
       try {
-        lineMapRef.current = buildLineMap(img);
+        const lm = buildLineMap(img);
+        lineMapRef.current = lm;
         mlsdImageRef.current = img;
+        setMlsdStats({
+          lmW: lm.width,
+          lmH: lm.height,
+          whitePixels: lm.whitePixels,
+          whiteRatio: lm.whiteRatio,
+        });
         setLineMapReady(true);
+        console.log("[snap] MLSD map decoded", {
+          mlsd: `${lm.width}×${lm.height}`,
+          source: `${imageWidth}×${imageHeight}`,
+          whitePixels: lm.whitePixels,
+          whiteRatio: (lm.whiteRatio * 100).toFixed(2) + "%",
+          aspectMatches:
+            Math.abs(lm.width / lm.height - imageWidth / imageHeight) < 0.01,
+        });
       } catch (err) {
-        console.warn("[PolygonSelect] failed to decode MLSD map", err);
+        console.warn("[snap] failed to decode MLSD map (likely CORS)", err);
       }
     };
     img.onerror = () => {
-      if (!cancelled) console.warn("[PolygonSelect] MLSD image failed to load");
+      if (!cancelled) console.warn("[snap] MLSD image failed to load");
     };
     img.src = mlsdMapUrl;
     return () => {
       cancelled = true;
     };
-  }, [mlsdMapUrl]);
+  }, [mlsdMapUrl, imageWidth, imageHeight]);
 
   // Effective pixels-per-meter for the segment labels. Two sources:
   //  1) Manual reference (`reference.pixelsPerMeter`) — used in photo 1.
@@ -276,23 +305,38 @@ export default function PolygonSelect({
       const raw: Point = { x: rawX, y: rawY };
 
       // Try snapping to the nearest MLSD line pixel (if the map is
-      // loaded and snap is on). The line map is generated from the
-      // source image so its coordinate system matches the points we
-      // store internally.
+      // loaded and snap is on). MLSD on Fal returns a fixed 1024×1024
+      // image regardless of input aspect ratio, so we have to scale
+      // X and Y independently to map source-pixel coordinates onto the
+      // line-map coordinate system.
       let final: Point = raw;
+      const diag = Math.hypot(imageWidth, imageHeight);
+      const radius = diag * SNAP_RADIUS_FRACTION;
       if (snapEnabled && lineMapRef.current) {
         const lm = lineMapRef.current;
-        // Map could be at a different resolution than the source — use
-        // its width vs the displayed image to derive a scale factor.
-        const lmScale = lm.width / imageWidth;
-        const diag = Math.hypot(imageWidth, imageHeight);
-        const radius = diag * SNAP_RADIUS_FRACTION;
-        const snapped = snapToNearestLine(raw, lm, radius, lmScale);
+        const lmScaleX = lm.width / imageWidth;
+        const lmScaleY = lm.height / imageHeight;
+        const snapped = snapToNearestLine(raw, lm, radius, lmScaleX, lmScaleY);
+        const distPx = snapped
+          ? Math.hypot(snapped.x - raw.x, snapped.y - raw.y)
+          : null;
+        setLastSnap({ raw, snapped, distPx, radiusPx: radius });
+        console.log("[snap] click", {
+          raw: `(${rawX.toFixed(0)}, ${rawY.toFixed(0)})`,
+          snapped: snapped
+            ? `(${snapped.x.toFixed(0)}, ${snapped.y.toFixed(0)})`
+            : "null (no line within radius)",
+          distPx: distPx?.toFixed(1),
+          radiusPx: radius.toFixed(0),
+          scales: `x=${lmScaleX.toFixed(3)}, y=${lmScaleY.toFixed(3)}`,
+        });
         if (snapped) {
           final = snapped;
           setSnapHint({ from: raw, to: snapped });
           window.setTimeout(() => setSnapHint(null), 350);
         }
+      } else {
+        setLastSnap({ raw, snapped: null, distPx: null, radiusPx: radius });
       }
       setPoints((prev) => [...prev, final]);
     },
@@ -404,6 +448,53 @@ export default function PolygonSelect({
               Tunnistetut rakennusreunat + sama polygoni päällä
             </span>
           </div>
+
+          {/* Diagnostic stats — helps see WHY snap might fail */}
+          {mlsdStats && (
+            <div className="text-[10px] leading-tight font-mono px-2 py-1.5 bg-slate-50 border border-slate-200 rounded text-slate-600 space-y-0.5">
+              <div>
+                MLSD: <strong>{mlsdStats.lmW}×{mlsdStats.lmH}</strong>{" "}
+                · source: <strong>{imageWidth}×{imageHeight}</strong>{" "}
+                · aspect{" "}
+                {Math.abs(
+                  mlsdStats.lmW / mlsdStats.lmH - imageWidth / imageHeight,
+                ) < 0.01 ? (
+                  <span className="text-green-600">match</span>
+                ) : (
+                  <span className="text-amber-600">
+                    DIFFER (stretch correction active)
+                  </span>
+                )}
+              </div>
+              <div>
+                Valkoisia pikseleitä:{" "}
+                <strong>{mlsdStats.whitePixels.toLocaleString()}</strong>{" "}
+                ({(mlsdStats.whiteRatio * 100).toFixed(2)}%){" "}
+                {mlsdStats.whitePixels < 100 && (
+                  <span className="text-red-600 font-semibold">
+                    — TYHJÄ MASK, snap ei voi toimia
+                  </span>
+                )}
+              </div>
+              {lastSnap && (
+                <div>
+                  Edellinen klikkaus:{" "}
+                  {lastSnap.snapped ? (
+                    <span className="text-green-700">
+                      snäpattiin {lastSnap.distPx?.toFixed(0)} px
+                      (raja {lastSnap.radiusPx.toFixed(0)} px)
+                    </span>
+                  ) : (
+                    <span className="text-red-600">
+                      ei snap — ei viivaa {lastSnap.radiusPx.toFixed(0)} px
+                      säteen sisällä
+                    </span>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+
           <div className="relative rounded-xl overflow-hidden border-2 border-cyan-300 bg-black">
             <canvas
               ref={debugCanvasRef}

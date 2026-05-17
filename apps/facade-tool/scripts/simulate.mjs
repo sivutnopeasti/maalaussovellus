@@ -595,14 +595,14 @@ function buildSyntheticLineMap(w, h, lines) {
   return { width: w, height: h, mask };
 }
 
-function snapToNearestLine(point, lineMap, maxRadiusPx, scale = 1) {
+function snapToNearestLine(point, lineMap, maxRadiusPx, scaleX = 1, scaleY = scaleX) {
   const { width: w, height: h, mask } = lineMap;
-  const cx = Math.round(point.x * scale);
-  const cy = Math.round(point.y * scale);
-  const r = Math.max(1, Math.round(maxRadiusPx * scale));
+  const cx = Math.round(point.x * scaleX);
+  const cy = Math.round(point.y * scaleY);
+  const r = Math.max(1, Math.round(maxRadiusPx * Math.min(scaleX, scaleY)));
 
   if (cx >= 0 && cx < w && cy >= 0 && cy < h && mask[cy * w + cx]) {
-    return { x: cx / scale, y: cy / scale };
+    return { x: cx / scaleX, y: cy / scaleY };
   }
 
   let bestDist2 = Infinity;
@@ -649,7 +649,7 @@ function snapToNearestLine(point, lineMap, maxRadiusPx, scale = 1) {
   }
 
   if (bestX < 0) return null;
-  return { x: bestX / scale, y: bestY / scale };
+  return { x: bestX / scaleX, y: bestY / scaleY };
 }
 
 test("12. Line snap — klikkaus siirtyy lähimmälle viivapikselille", () => {
@@ -690,7 +690,7 @@ test("13. Line snap — kaukainen klikkaus ei snäppää", () => {
   return assertTrue("Snap palautti null", snap === null);
 });
 
-test("14. Line snap — eri resoluution viivakartta (scale)", () => {
+test("14. Line snap — eri resoluution viivakartta (sama aspect ratio)", () => {
   // Viivakartta 500×300 (puolet alkuperäisen 1000×600:sta).
   const W = 500;
   const H = 300;
@@ -700,11 +700,44 @@ test("14. Line snap — eri resoluution viivakartta (scale)", () => {
 
   // Käyttäjän klikkaus alkuperäiskoordinaatistossa lähellä viivaa
   const click = { x: 510, y: 200 };
-  const snap = snapToNearestLine(click, lineMap, 40, W / 1000);
+  const snap = snapToNearestLine(click, lineMap, 40, W / 1000, H / 600);
   console.log(`   ℹ Klikkaus (510,200) alkuperäiskoordinaatistossa → snap (${snap?.x},${snap?.y})`);
   if (!snap) return false;
   // Snäppäys siirtää x ≈ 500 (puolet pikseleistä lineMapissa = 250 → /scale = 500)
   return assertApproxEqual("Snap x ≈ 500 alkuperäiskoordinaatistossa", snap.x, 500, 0.01);
+});
+
+test("15. Line snap — anamorfinen venytys (4032×3024 → 1024×1024)", () => {
+  // Simuloidaan Fal MLSD:n käyttäytymistä: portrait-iPhone-kuva
+  // venytetään 1024×1024-neliöön. Pystyviiva alkuperäisen kuvan
+  // x=2000 sijoittuu lineMapissa x = 2000 * 1024/4032 ≈ 508.
+  const sourceW = 4032;
+  const sourceH = 3024;
+  const lmW = 1024;
+  const lmH = 1024;
+  const lmX = Math.round(2000 * (lmW / sourceW));
+  const lineMap = buildSyntheticLineMap(lmW, lmH, [
+    [lmX, 0, lmX, lmH - 1], // pystyviiva line-map-koordinaatistossa
+  ]);
+
+  // Klikkaus alkuperäisessä koordinaatistossa: 30 px pielessä pystyviivasta
+  const click = { x: 2030, y: 1500 };
+  const radius = Math.hypot(sourceW, sourceH) * 0.03; // ≈ 151 px source-pikseliä
+  const snap = snapToNearestLine(
+    click,
+    lineMap,
+    radius,
+    lmW / sourceW,
+    lmH / sourceH,
+  );
+  console.log(`   ℹ Klikkaus (2030,1500) → snap (${snap?.x.toFixed(0)},${snap?.y.toFixed(0)})`);
+  console.log(`   ℹ Snäppäysraja: ${radius.toFixed(0)} px alkuperäisessä`);
+  if (!snap) return false;
+  // Snap pitäisi siirtää x ≈ 2000, y säilyy ≈ 1500 (skaalaus epäsuhtainen
+  // mutta tulos palautetaan alkuperäiseen koordinaatistoon)
+  const ok1 = assertApproxEqual("Snap x ≈ 2000", snap.x, 2000, 0.01);
+  const ok2 = assertApproxEqual("Snap y ≈ 1500", snap.y, 1500, 0.02);
+  return ok1 && ok2;
 });
 
 // ────────────────────────────────────────────────────────────────────────────
