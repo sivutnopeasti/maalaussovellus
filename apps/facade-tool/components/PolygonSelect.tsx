@@ -7,7 +7,7 @@ import { findReferenceVerticalEdge } from "@/lib/wallHeight";
 import {
   buildLineMap,
   snapToNearestLine,
-  isLikelyIntersection,
+  snapToNearestCorner,
   type LineMapData,
 } from "@/lib/lineSnap";
 import { useCanvasViewport } from "@/lib/useCanvasViewport";
@@ -43,11 +43,6 @@ type Phase = "drawing" | "done";
  *  enough that the snap target is unambiguous. */
 const SNAP_RADIUS_FRACTION = 0.05;
 
-/** If a candidate within this fraction of the best one is a likely
- *  intersection (3+ neighbour line pixels), prefer it. This pulls
- *  snaps onto building corners rather than mid-segment edge points. */
-const INTERSECTION_BIAS = 1.5;
-
 export default function PolygonSelect({
   imageUrl,
   imageWidth,
@@ -71,10 +66,12 @@ export default function PolygonSelect({
   /** Live preview of where a click at the current mouse position would
    *  land after snapping. Drawn under the cursor while the user is
    *  drawing, so they know exactly which edge the click will snap to
-   *  before committing. */
+   *  before committing. `kind` tells whether the snap is to a corner
+   *  (preferred — green) or a regular line pixel (cyan). */
   const [hoverSnap, setHoverSnap] = useState<{
     cursor: Point;
     snapped: Point | null;
+    kind: "corner" | "line" | null;
   } | null>(null);
   const [canvasSize, setCanvasSize] = useState({ w: 0, h: 0 });
   const [scale, setScale] = useState(1);
@@ -298,15 +295,22 @@ export default function PolygonSelect({
     }
 
     // Live hover preview — shows where a click at the current cursor
-    // position would land after snapping.
+    // position would land after snapping. Color encodes the snap type:
+    //   green  = corner (intersection of two lines, preferred)
+    //   cyan   = regular line pixel
     if (hoverSnap && phase === "drawing") {
       ctx.save();
       if (hoverSnap.snapped) {
+        const isCorner = hoverSnap.kind === "corner";
+        const colorFill = isCorner ? "#10b981" : "#22d3ee";
+        const colorGuide = isCorner
+          ? "rgba(16, 185, 129, 0.75)"
+          : "rgba(34, 211, 238, 0.7)";
         const cx = sx(hoverSnap.cursor);
         const cy = sy(hoverSnap.cursor);
         const tx = sx(hoverSnap.snapped);
         const ty = sy(hoverSnap.snapped);
-        ctx.strokeStyle = "rgba(34, 211, 238, 0.7)";
+        ctx.strokeStyle = colorGuide;
         ctx.lineWidth = viewport.strokeWidth(1.5);
         ctx.setLineDash([viewport.strokeWidth(2), viewport.strokeWidth(3)]);
         ctx.beginPath();
@@ -314,13 +318,34 @@ export default function PolygonSelect({
         ctx.lineTo(tx, ty);
         ctx.stroke();
         ctx.setLineDash([]);
+        // Snap target: larger filled dot when it's a corner, plus a
+        // small cross-hair to make the intent obvious.
+        const dotR = viewport.dotRadius(isCorner ? 7 : 6);
         ctx.beginPath();
-        ctx.arc(tx, ty, viewport.dotRadius(6), 0, Math.PI * 2);
-        ctx.fillStyle = "#22d3ee";
+        ctx.arc(tx, ty, dotR, 0, Math.PI * 2);
+        ctx.fillStyle = colorFill;
         ctx.fill();
         ctx.strokeStyle = "#fff";
         ctx.lineWidth = viewport.strokeWidth(1.5);
         ctx.stroke();
+        if (isCorner) {
+          // Cross-hair through the corner — a subtle but clear "this is
+          // a corner, not just any line pixel" indicator.
+          const armOuter = viewport.dotRadius(12);
+          const armInner = viewport.dotRadius(9);
+          ctx.strokeStyle = colorFill;
+          ctx.lineWidth = viewport.strokeWidth(1.5);
+          ctx.beginPath();
+          ctx.moveTo(tx - armOuter, ty);
+          ctx.lineTo(tx - armInner, ty);
+          ctx.moveTo(tx + armInner, ty);
+          ctx.lineTo(tx + armOuter, ty);
+          ctx.moveTo(tx, ty - armOuter);
+          ctx.lineTo(tx, ty - armInner);
+          ctx.moveTo(tx, ty + armInner);
+          ctx.lineTo(tx, ty + armOuter);
+          ctx.stroke();
+        }
       } else {
         const cx = sx(hoverSnap.cursor);
         const cy = sy(hoverSnap.cursor);
@@ -373,59 +398,54 @@ export default function PolygonSelect({
   }, [redraw, redrawDebug, lineMapReady]);
 
   /** Resolve the snap target for a given raw point in image-space.
-   *  Returns the snapped point + diagnostic info, or null when snap is
-   *  disabled / no line is within radius. Shared between mouseMove (live
-   *  preview) and click (commit). */
+   *  Two-stage strategy:
+   *    1. Try to find a CORNER (line intersection / endpoint) within
+   *       the snap radius. House corners, eaves/ridge joins and opening
+   *       corners are all intersections, so this catches them.
+   *    2. If no corner is in range, fall back to the nearest line pixel
+   *       (regular line snap, as before).
+   *  Shared between mouseMove (live preview) and click (commit). */
   const resolveSnap = useCallback(
-    (raw: Point): { snapped: Point | null; distPx: number | null; radius: number } => {
+    (
+      raw: Point,
+    ): {
+      snapped: Point | null;
+      distPx: number | null;
+      radius: number;
+      kind: "corner" | "line" | null;
+    } => {
       const diag = Math.hypot(imageWidth, imageHeight);
       const radius = diag * SNAP_RADIUS_FRACTION;
       if (!snapEnabled || !lineMapRef.current) {
-        return { snapped: null, distPx: null, radius };
+        return { snapped: null, distPx: null, radius, kind: null };
       }
       const lm = lineMapRef.current;
       const lmScaleX = lm.width / imageWidth;
       const lmScaleY = lm.height / imageHeight;
-      const snapped = snapToNearestLine(raw, lm, radius, lmScaleX, lmScaleY);
-      if (!snapped) return { snapped: null, distPx: null, radius };
 
-      // Intersection bias: if the candidate is on a line but NOT an
-      // intersection, do a tiny extra search in the 8-neighbourhood for
-      // an intersection pixel and prefer it if it's not too far.
-      const lx = Math.round(snapped.x * lmScaleX);
-      const ly = Math.round(snapped.y * lmScaleY);
-      if (!isLikelyIntersection(lx, ly, lm)) {
-        const intRadiusLm = Math.max(
-          2,
-          Math.round(radius * INTERSECTION_BIAS * Math.min(lmScaleX, lmScaleY)),
-        );
-        let bestX = lx;
-        let bestY = ly;
-        let bestD2 = Infinity;
-        for (let dy = -intRadiusLm; dy <= intRadiusLm; dy++) {
-          for (let dx = -intRadiusLm; dx <= intRadiusLm; dx++) {
-            const x = lx + dx;
-            const y = ly + dy;
-            if (x <= 0 || x >= lm.width - 1 || y <= 0 || y >= lm.height - 1)
-              continue;
-            if (!lm.mask[y * lm.width + x]) continue;
-            if (!isLikelyIntersection(x, y, lm)) continue;
-            const d2 = dx * dx + dy * dy;
-            if (d2 < bestD2) {
-              bestD2 = d2;
-              bestX = x;
-              bestY = y;
-            }
-          }
-        }
-        if (bestD2 !== Infinity) {
-          snapped.x = bestX / lmScaleX;
-          snapped.y = bestY / lmScaleY;
-        }
+      // Stage 1 — corner
+      const corner = snapToNearestCorner(raw, lm, radius, lmScaleX, lmScaleY);
+      if (corner) {
+        return {
+          snapped: corner,
+          distPx: Math.hypot(corner.x - raw.x, corner.y - raw.y),
+          radius,
+          kind: "corner",
+        };
       }
 
-      const distPx = Math.hypot(snapped.x - raw.x, snapped.y - raw.y);
-      return { snapped, distPx, radius };
+      // Stage 2 — line
+      const line = snapToNearestLine(raw, lm, radius, lmScaleX, lmScaleY);
+      if (line) {
+        return {
+          snapped: line,
+          distPx: Math.hypot(line.x - raw.x, line.y - raw.y),
+          radius,
+          kind: "line",
+        };
+      }
+
+      return { snapped: null, distPx: null, radius, kind: null };
     },
     [snapEnabled, imageWidth, imageHeight],
   );
@@ -450,8 +470,8 @@ export default function PolygonSelect({
     (e: React.MouseEvent<HTMLCanvasElement>) => {
       if (phase !== "drawing") return;
       const cursor = eventToImage(e);
-      const { snapped } = resolveSnap(cursor);
-      setHoverSnap({ cursor, snapped });
+      const { snapped, kind } = resolveSnap(cursor);
+      setHoverSnap({ cursor, snapped, kind });
     },
     [phase, eventToImage, resolveSnap],
   );
@@ -466,13 +486,14 @@ export default function PolygonSelect({
       if (phase !== "drawing") return;
       const raw = eventToImage(e);
 
-      const { snapped, distPx, radius } = resolveSnap(raw);
+      const { snapped, distPx, radius, kind } = resolveSnap(raw);
       setLastSnap({ raw, snapped, distPx, radiusPx: radius });
       console.log("[snap] click", {
         raw: `(${raw.x.toFixed(0)}, ${raw.y.toFixed(0)})`,
         snapped: snapped
           ? `(${snapped.x.toFixed(0)}, ${snapped.y.toFixed(0)})`
           : "null (no line within radius)",
+        kind,
         distPx: distPx?.toFixed(1),
         radiusPx: radius.toFixed(0),
       });
@@ -548,8 +569,12 @@ export default function PolygonSelect({
                 <span className="text-cyan-600">— ladataan…</span>
               ) : snapEnabled ? (
                 <span>
-                  — <span className="text-cyan-700 font-medium">syaaninen piste</span>{" "}
-                  hiiren alla näyttää mihin klikkaus snäppää.
+                  —{" "}
+                  <span className="text-emerald-700 font-medium">vihreä</span> ={" "}
+                  kulmaan,{" "}
+                  <span className="text-cyan-700 font-medium">syaani</span> ={" "}
+                  viivaan. Hiiren alla oleva piste näyttää kohteen ennen
+                  klikkausta.
                 </span>
               ) : (
                 <span className="text-cyan-600">— pois käytöstä.</span>

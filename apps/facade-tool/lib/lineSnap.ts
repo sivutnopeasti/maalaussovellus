@@ -159,16 +159,18 @@ export function snapToNearestLine(
 }
 
 /**
- * Slightly bias the snap toward "intersection-like" pixels: those that
- * have white neighbours in two roughly perpendicular directions. This is
- * cheap (8-neighbour read) and tends to pull the snap onto building
- * corners rather than mid-segment points when both are nearby.
+ * Decide whether the pixel at (x, y) is a "corner" — i.e. an
+ * intersection or endpoint where two or more line segments meet. Used
+ * by `snapToNearestCorner` and as a tie-breaker in `snapToNearestLine`.
  *
- * Returns a small bonus radius (in pixels) that should be subtracted
- * from the effective distance when picking between candidates of similar
- * Euclidean distance. The current implementation just rewards 8-way
- * neighbour count; in practice the simple `snapToNearestLine` above is
- * already a big quality boost so this is an optional refinement.
+ * Heuristic:
+ *   - Look at the 8-neighbourhood of (x, y).
+ *   - Plain mid-segment pixels have exactly 2 lit neighbours (previous +
+ *     next pixel along the line).
+ *   - Corners / T-junctions / X-junctions have 3 or more.
+ *   - We also accept line endpoints (1 neighbour only) because MLSD
+ *     often emits short line stubs at building corners that don't quite
+ *     touch — a stub endpoint is just as useful a snap target.
  */
 export function isLikelyIntersection(
   x: number,
@@ -184,7 +186,81 @@ export function isLikelyIntersection(
       if (mask[(y + dy) * w + (x + dx)]) n++;
     }
   }
-  // A simple mid-segment point has typically 2 lit neighbours; corners
-  // (intersections) have 3+.
-  return n >= 3;
+  return n >= 3 || n === 1;
+}
+
+/**
+ * Snap a point to the nearest CORNER pixel within the given radius.
+ *
+ * A "corner" is any line-pixel for which `isLikelyIntersection`
+ * returns true — typically the intersection of two segments (house
+ * corner, eaves/ridge join, opening corner). Returns null when no
+ * corner is found inside the search disc — callers should then fall
+ * back to `snapToNearestLine` for a regular line snap.
+ *
+ * Like `snapToNearestLine`, this function handles separate X/Y
+ * scales for the line map (Fal MLSD emits a fixed 1024×1024 raster
+ * regardless of input aspect ratio).
+ */
+export function snapToNearestCorner(
+  point: Point,
+  lineMap: LineMapData,
+  maxRadiusPx: number,
+  scaleX = 1,
+  scaleY = scaleX,
+): Point | null {
+  const { width: w, height: h, mask } = lineMap;
+  const cx = Math.round(point.x * scaleX);
+  const cy = Math.round(point.y * scaleY);
+  const r = Math.max(1, Math.round(maxRadiusPx * Math.min(scaleX, scaleY)));
+
+  // Fast path: clicked pixel itself is a corner.
+  if (cx >= 1 && cx < w - 1 && cy >= 1 && cy < h - 1) {
+    if (mask[cy * w + cx] && isLikelyIntersection(cx, cy, lineMap)) {
+      return { x: cx / scaleX, y: cy / scaleY };
+    }
+  }
+
+  // Expanding square shells, identical structure to snapToNearestLine
+  // but additionally requires the pixel to be a corner.
+  let bestDist2 = Infinity;
+  let bestX = -1;
+  let bestY = -1;
+  let foundShellRadius = -1;
+
+  for (let shell = 1; shell <= r; shell++) {
+    if (foundShellRadius > 0 && shell > foundShellRadius * Math.SQRT2 + 1) {
+      break;
+    }
+    const x0 = Math.max(1, cx - shell);
+    const x1 = Math.min(w - 2, cx + shell);
+    const y0 = Math.max(1, cy - shell);
+    const y1 = Math.min(h - 2, cy + shell);
+
+    const checkPixel = (x: number, y: number) => {
+      if (!mask[y * w + x]) return;
+      if (!isLikelyIntersection(x, y, lineMap)) return;
+      const d2 = (x - cx) * (x - cx) + (y - cy) * (y - cy);
+      if (d2 < bestDist2) {
+        bestDist2 = d2;
+        bestX = x;
+        bestY = y;
+        if (foundShellRadius < 0) foundShellRadius = shell;
+      }
+    };
+
+    // Top and bottom rows
+    for (const y of [cy - shell, cy + shell]) {
+      if (y < 1 || y > h - 2) continue;
+      for (let x = x0; x <= x1; x++) checkPixel(x, y);
+    }
+    // Left and right columns (without corners)
+    for (const x of [cx - shell, cx + shell]) {
+      if (x < 1 || x > w - 2) continue;
+      for (let y = y0 + 1; y <= y1 - 1; y++) checkPixel(x, y);
+    }
+  }
+
+  if (bestX < 0) return null;
+  return { x: bestX / scaleX, y: bestY / scaleY };
 }
