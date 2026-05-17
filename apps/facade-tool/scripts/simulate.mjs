@@ -13,7 +13,7 @@
 // Toistetaan lib/wallHeight.ts -funktiot puhtaalla JS:llä (samat raja-arvot)
 // ────────────────────────────────────────────────────────────────────────────
 
-const VERTICAL_TOLERANCE_DEG = 22;
+const VERTICAL_TOLERANCE_DEG = 30;
 const MIN_EDGE_PIXELS = 30;
 
 function findVerticalEdges(polygon) {
@@ -336,12 +336,12 @@ test("3. Kahden kuvan työnkulku: auto-referenssi toiselle kuvalle", () => {
 });
 
 test("4. Reunatapaus: polygonissa ei pystyreunoja → autovirhe", () => {
-  // Vino paralleeligrammi — kaikki reunat selvästi yli 22° pystystä
+  // Vino paralleeligrammi — kaikki reunat selvästi yli 30° pystystä
   const slantedPolygon = [
-    { x: 100, y: 800 }, // 1→2: dx=400, dy=-600 → atan(400/600)≈33,7° (vino)
-    { x: 500, y: 200 },
-    { x: 1700, y: 100 }, // 2→3: vaakatasoinen
-    { x: 1300, y: 700 }, // 3→4: dx=-400, dy=600 → 33,7° (vino)
+    { x: 100, y: 800 }, // 1→2: dx=600, dy=-600 → atan(600/600)=45° (vino)
+    { x: 700, y: 200 },
+    { x: 1900, y: 100 }, // 2→3: vaakatasoinen
+    { x: 1300, y: 700 }, // 3→4: dx=-600, dy=600 → 45° (vino)
   ];
   const result = calculateAutoArea(slantedPolygon, 3.6);
   return assertTrue("Auto-virhe palautetaan", !!result.error);
@@ -361,7 +361,7 @@ test("5. Reunatapaus: kolmio jossa vain yksi pystyreuna", () => {
   return ok && assertApproxEqual("Korkeus yhdestä reunasta", h, 6.0, 0.02);
 });
 
-test("6. ±22° toleranssi: hieman vino reuna hyväksytään", () => {
+test("6. ±30° toleranssi: hieman vino reuna hyväksytään", () => {
   // Lievä vinous (10° pystystä) — pitäisi hyväksyä
   const slightlyTilted = [
     { x: 100, y: 800 },
@@ -373,14 +373,14 @@ test("6. ±22° toleranssi: hieman vino reuna hyväksytään", () => {
   return assertTrue("Lievästi vino pystyreuna hyväksytty", edges.length >= 1);
 });
 
-test("7. ±22° toleranssi: liian vinot reunat hylätään", () => {
-  // Polygoni jossa KAIKKI sivut > 22° pystystä.
+test("7. ±30° toleranssi: liian vinot reunat hylätään", () => {
+  // Polygoni jossa KAIKKI sivut > 30° pystystä.
   const tooTilted = [
-    { x: 100, y: 800 }, // 1. reuna 1→2: dx=250, dy=-400 → atan(250/400) ≈ 32° (hylätään)
-    { x: 350, y: 400 },
-    { x: 900, y: 200 }, // 2. reuna 2→3: dx=550, dy=-200 → ≈70° (vaaka)
-    { x: 1150, y: 700 }, // 3. reuna 3→4: dx=250, dy=500 → ≈26,6° (hylätään)
-    // 4. reuna 4→1: dx=-1050, dy=100 → ≈84° (vaaka)
+    { x: 100, y: 800 }, // 1. reuna 1→2: dx=400, dy=-400 → atan(400/400)=45° (hylätään)
+    { x: 500, y: 400 },
+    { x: 1100, y: 200 }, // 2. reuna 2→3: dx=600, dy=-200 → ≈71,6° (vaaka)
+    { x: 1500, y: 700 }, // 3. reuna 3→4: dx=400, dy=500 → atan(400/500)=38,7° (hylätään)
+    // 4. reuna 4→1: dx=-1400, dy=100 → ≈85,9° (vaaka)
   ];
   const edges = findVerticalEdges(tooTilted);
   const verticalsFound = edges.length;

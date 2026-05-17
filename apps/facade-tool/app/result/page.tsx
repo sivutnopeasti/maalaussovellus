@@ -49,6 +49,11 @@ export default function ResultPage() {
   const [lastStoredWallHeightM, setLastStoredWallHeightM] = useState<
     number | null
   >(null);
+  /** Set to a message when wall-height storage failed → user must do
+   *  a manual reference on next photo. */
+  const [wallHeightWarning, setWallHeightWarning] = useState<string | null>(
+    null,
+  );
   const [project, setProject] = useState<FacadeProject | null>(null);
   // Keystone (vertical) correction uses the vanishing point or sensor tilt — reliable for tilted photos.
   // The customer is instructed to photograph the wall head-on (from the center) so no horizontal
@@ -145,9 +150,29 @@ export default function ResultPage() {
         activePolygon.points,
         activeReference.pixelsPerMeter,
       );
+      console.log("[wallHeight] handleCalculate", {
+        wallHeightM,
+        polygonPoints: activePolygon.points.length,
+        ppm: activeReference.pixelsPerMeter,
+        willStore: wallHeightM !== null && wallHeightM > 1 && wallHeightM < 25,
+      });
       if (wallHeightM !== null && wallHeightM > 1 && wallHeightM < 25) {
         storeWallHeight(wallHeightM);
         setLastStoredWallHeightM(wallHeightM);
+        setWallHeightWarning(null);
+        console.log("[wallHeight] stored", wallHeightM, "m");
+      } else if (wallHeightM === null) {
+        const msg =
+          "Polygonissa ei tunnistettu yhtään pystysuoraa nurkkaa (kaikki reunat yli 30° vinossa pystystä). Seuraavan kuvan analysointi vaatii uuden referenssimittauksen.";
+        setWallHeightWarning(msg);
+        console.warn("[wallHeight] no vertical edges — NOT stored");
+      } else {
+        const msg = `Nurkkakorkeus ${wallHeightM.toFixed(1)} m ei ole uskottava (oltava 1-25 m). Seuraavan kuvan analysointi vaatii uuden referenssimittauksen.`;
+        setWallHeightWarning(msg);
+        console.warn(
+          "[wallHeight] estimate out of plausible range (1-25 m):",
+          wallHeightM,
+        );
       }
 
       // Add this measurement to the running project total
@@ -417,6 +442,14 @@ export default function ResultPage() {
                         Voit seuraavalle kuvalle ohittaa referenssimittauksen
                         — sovellus käyttää tätä automaattisesti.
                       </span>
+                    </div>
+                  )}
+
+                  {/* Warning: storage failed — manual reference required next time */}
+                  {wallHeightWarning && (
+                    <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl text-xs text-amber-800 flex items-start gap-2">
+                      <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                      <span>{wallHeightWarning}</span>
                     </div>
                   )}
 

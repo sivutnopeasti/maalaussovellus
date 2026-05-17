@@ -16,9 +16,11 @@
 import type { Point } from "./types";
 
 /** Edges whose direction deviates this much from vertical are still treated
- *  as a wall corner. 22° tolerates slightly imperfect clicking, mild
- *  perspective tilt, and small keystone artefacts in the polygon. */
-const VERTICAL_TOLERANCE_DEG = 22;
+ *  as a wall corner. 30° is permissive but matches reality: photos taken
+ *  by phone often have noticeable perspective tilt, and customer clicks
+ *  drift by a few pixels — both push polygon corner edges quite far off
+ *  from a perfect vertical. */
+const VERTICAL_TOLERANCE_DEG = 30;
 
 /** Edges shorter than this (in pixels) are ignored — they are too small to
  *  represent a full wall corner reliably. */
@@ -101,12 +103,18 @@ export interface StoredWallHeight {
 /** Persist the wall corner height across sessions. */
 export function storeWallHeight(valueM: number): void {
   if (typeof window === "undefined") return;
-  if (!Number.isFinite(valueM) || valueM <= 0) return;
+  if (!Number.isFinite(valueM) || valueM <= 0) {
+    console.warn("[wallHeight] storeWallHeight refused", { valueM });
+    return;
+  }
   const data: StoredWallHeight = { valueM, savedAt: Date.now() };
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
-  } catch {
-    // ignore quota / serialization errors
+    // Verify the write actually landed.
+    const back = localStorage.getItem(STORAGE_KEY);
+    console.log("[wallHeight] wrote", valueM, "m → readback:", back);
+  } catch (err) {
+    console.error("[wallHeight] localStorage.setItem failed", err);
   }
 }
 
@@ -123,8 +131,8 @@ export function getStoredWallHeight(): StoredWallHeight | null {
         savedAt: typeof parsed.savedAt === "number" ? parsed.savedAt : 0,
       };
     }
-  } catch {
-    // ignore parse errors
+  } catch (err) {
+    console.warn("[wallHeight] getStoredWallHeight parse error", err);
   }
   return null;
 }

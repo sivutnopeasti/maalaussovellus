@@ -36,15 +36,11 @@ const CameraCapture = dynamic(() => import("@/components/CameraCapture"), {
 type Step = "capture" | "reference" | "analysing";
 
 /**
- * TEMPORARY DEBUG FLAG.
- *
- * When `true`, every photo asks for a manual reference line — including
- * the 2nd / 3rd wall — even if a stored wall-corner height exists. This
- * is on right now so we can verify the MLSD line-snap quality against
- * an independent manual reference. Flip back to `false` to restore the
- * auto-reference workflow.
+ * Debug override. When `true`, every photo asks for a manual reference
+ * line — even if a stored wall-corner height exists. Normally `false`:
+ * subsequent walls reuse the auto-reference.
  */
-const FORCE_MANUAL_REFERENCE = true;
+const FORCE_MANUAL_REFERENCE = false;
 
 /** Placeholder used when the user picks auto-mode: the real reference is
  *  computed on the result page from the polygon's vertical edges. */
@@ -169,6 +165,14 @@ export default function HomePage() {
     // home page is re-mounted from the result page — the React state may
     // still be `null` while the value already exists in localStorage.
     const wh = getStoredWallHeight();
+    console.log("[capture] handleCameraCapture", {
+      storedWallHeight: wh,
+      FORCE_MANUAL_REFERENCE,
+      willGoTo:
+        !FORCE_MANUAL_REFERENCE && wh && wh.valueM > 0
+          ? "auto-analysis"
+          : "manual reference",
+    });
 
     const img = new Image();
     img.onload = () => {
