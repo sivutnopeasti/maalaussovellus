@@ -343,15 +343,36 @@ export default function HomePage() {
                       </span>
                     </li>
                   </ul>
-                  {storedWallHeight && (
-                    <p className="text-xs text-indigo-600 flex items-center gap-1 pt-1">
-                      <Sparkles className="w-3 h-3" />
-                      Tallennettu nurkkakorkeus:{" "}
-                      <strong>{storedWallHeight.valueM.toFixed(2)} m</strong>
-                    </p>
-                  )}
                 </div>
               )}
+
+              {/* Auto-reference status — always shown after the first wall.
+                  Green if a stored corner height is available (next photo
+                  will analyse automatically); amber if not (manual ref
+                  required). */}
+              {wallCount > 0 &&
+                (storedWallHeight ? (
+                  <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-xl text-sm flex items-start gap-2">
+                    <Sparkles className="w-4 h-4 shrink-0 mt-0.5 text-emerald-600" />
+                    <div className="text-emerald-800">
+                      <strong>Auto-referenssi aktiivinen.</strong>{" "}
+                      Tallennettu nurkkakorkeus{" "}
+                      <strong>{storedWallHeight.valueM.toFixed(2)} m</strong>{" "}
+                      — seuraava kuva analysoidaan suoraan ilman
+                      referenssimittausta.
+                    </div>
+                  </div>
+                ) : (
+                  <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl text-sm flex items-start gap-2">
+                    <AlertCircle className="w-4 h-4 shrink-0 mt-0.5 text-amber-600" />
+                    <div className="text-amber-800">
+                      <strong>Auto-referenssi ei käytössä.</strong>{" "}
+                      Nurkkakorkeutta ei voitu tallentaa edellisestä
+                      mittauksesta — tähän kuvaan tarvitaan oma
+                      referenssimitta.
+                    </div>
+                  </div>
+                ))}
 
               <div className="p-4 bg-slate-50 border border-slate-200 rounded-xl space-y-1 text-sm text-slate-600">
                 <p className="font-semibold text-slate-800">Kuvausohjeet</p>

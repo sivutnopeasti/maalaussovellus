@@ -15,12 +15,15 @@
 
 import type { Point } from "./types";
 
-/** Edges whose direction deviates this much from vertical are still treated
- *  as a wall corner. 30° is permissive but matches reality: photos taken
- *  by phone often have noticeable perspective tilt, and customer clicks
- *  drift by a few pixels — both push polygon corner edges quite far off
- *  from a perfect vertical. */
+/** Edges whose direction deviates this much from vertical are treated
+ *  as a wall corner with high confidence. */
 const VERTICAL_TOLERANCE_DEG = 30;
+
+/** Fallback tolerance — if the strict tolerance finds nothing, we treat
+ *  anything "more vertical than horizontal" as a wall corner candidate.
+ *  This guarantees `estimateWallHeightM` returns a value for virtually
+ *  every reasonable polygon, so auto-reference always works. */
+const FALLBACK_VERTICAL_DEG = 60;
 
 /** Edges shorter than this (in pixels) are ignored — they are too small to
  *  represent a full wall corner reliably. */
@@ -34,8 +37,11 @@ export interface VerticalEdge {
   deviationDeg: number;
 }
 
-/** Return all polygon edges that are within ±VERTICAL_TOLERANCE_DEG of vertical. */
-export function findVerticalEdges(polygon: Point[]): VerticalEdge[] {
+/** Return all polygon edges whose deviation from vertical is ≤ `toleranceDeg`. */
+export function findVerticalEdges(
+  polygon: Point[],
+  toleranceDeg: number = VERTICAL_TOLERANCE_DEG,
+): VerticalEdge[] {
   if (polygon.length < 2) return [];
   const edges: VerticalEdge[] = [];
   const n = polygon.length;
@@ -49,7 +55,7 @@ export function findVerticalEdges(polygon: Point[]): VerticalEdge[] {
     // 0° = perfectly vertical, 90° = perfectly horizontal
     const deviationDeg =
       Math.atan2(Math.abs(dx), Math.abs(dy)) * (180 / Math.PI);
-    if (deviationDeg <= VERTICAL_TOLERANCE_DEG) {
+    if (deviationDeg <= toleranceDeg) {
       edges.push({ p1: a, p2: b, pixelLength, deviationDeg });
     }
   }
@@ -57,33 +63,65 @@ export function findVerticalEdges(polygon: Point[]): VerticalEdge[] {
 }
 
 /** Estimate the wall corner height (in meters) from a polygon, given a known
- *  pixels-per-meter scale. Returns the median length of all vertical edges,
- *  or null if no vertical edges are detected. */
+ *  pixels-per-meter scale. Uses a two-tier strategy:
+ *
+ *   1. Strict: edges within VERTICAL_TOLERANCE_DEG of vertical → take the
+ *      median length. This is the normal path.
+ *   2. Fallback: if nothing was strict-vertical, accept any edge that's at
+ *      least "more vertical than horizontal" (FALLBACK_VERTICAL_DEG) and
+ *      return the LONGEST such edge — typically the actual wall corner in
+ *      a strongly tilted photo.
+ *
+ *  Returns null only if the polygon doesn't have a single edge that's more
+ *  vertical than horizontal — which essentially never happens in practice.
+ */
 export function estimateWallHeightM(
   polygon: Point[],
   pixelsPerMeter: number,
 ): number | null {
   if (pixelsPerMeter <= 0) return null;
-  const edges = findVerticalEdges(polygon);
-  if (edges.length === 0) return null;
-  const sorted = edges.map((e) => e.pixelLength).sort((a, b) => a - b);
-  const m = sorted.length;
-  const median =
-    m % 2 === 0
-      ? (sorted[m / 2 - 1] + sorted[m / 2]) / 2
-      : sorted[Math.floor(m / 2)];
-  return median / pixelsPerMeter;
+
+  // Strict pass
+  const strict = findVerticalEdges(polygon, VERTICAL_TOLERANCE_DEG);
+  if (strict.length > 0) {
+    const sorted = strict.map((e) => e.pixelLength).sort((a, b) => a - b);
+    const m = sorted.length;
+    const median =
+      m % 2 === 0
+        ? (sorted[m / 2 - 1] + sorted[m / 2]) / 2
+        : sorted[Math.floor(m / 2)];
+    return median / pixelsPerMeter;
+  }
+
+  // Fallback pass — take the longest "more vertical than horizontal" edge.
+  const lax = findVerticalEdges(polygon, FALLBACK_VERTICAL_DEG);
+  if (lax.length === 0) return null;
+  const longest = lax.reduce((best, e) =>
+    e.pixelLength >= best.pixelLength ? e : best,
+  );
+  console.log("[wallHeight] using fallback edge", {
+    deviationDeg: longest.deviationDeg.toFixed(1),
+    pixelLength: longest.pixelLength.toFixed(0),
+  });
+  return longest.pixelLength / pixelsPerMeter;
 }
 
 /** Pick the longest near-vertical edge of a polygon — the best candidate to
  *  use as a reference line when calibrating a new photo against a known
- *  wall corner height. */
+ *  wall corner height. Falls back to a permissive tolerance when needed,
+ *  same as `estimateWallHeightM`. */
 export function findReferenceVerticalEdge(
   polygon: Point[],
 ): VerticalEdge | null {
-  const edges = findVerticalEdges(polygon);
-  if (edges.length === 0) return null;
-  return edges.reduce((best, e) =>
+  const strict = findVerticalEdges(polygon, VERTICAL_TOLERANCE_DEG);
+  if (strict.length > 0) {
+    return strict.reduce((best, e) =>
+      e.pixelLength >= best.pixelLength ? e : best,
+    );
+  }
+  const lax = findVerticalEdges(polygon, FALLBACK_VERTICAL_DEG);
+  if (lax.length === 0) return null;
+  return lax.reduce((best, e) =>
     e.pixelLength >= best.pixelLength ? e : best,
   );
 }
