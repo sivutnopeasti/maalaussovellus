@@ -395,14 +395,44 @@ export default function HomePage() {
                     </div>
                   </div>
                 ) : (
-                  <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl text-sm flex items-start gap-2">
-                    <AlertCircle className="w-4 h-4 shrink-0 mt-0.5 text-amber-600" />
-                    <div className="text-amber-800">
-                      <strong>Auto-referenssi ei käytössä.</strong>{" "}
-                      Nurkkakorkeutta ei voitu tallentaa edellisestä
-                      mittauksesta — tähän kuvaan tarvitaan oma
-                      referenssimitta.
+                  <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl text-sm space-y-2">
+                    <div className="flex items-start gap-2">
+                      <AlertCircle className="w-4 h-4 shrink-0 mt-0.5 text-amber-600" />
+                      <div className="text-amber-800">
+                        <strong>Auto-referenssi ei käytössä.</strong>{" "}
+                        Nurkkakorkeutta ei voitu tallentaa edellisestä
+                        mittauksesta — tähän kuvaan tarvitaan oma
+                        referenssimitta.
+                      </div>
                     </div>
+                    <details className="text-[10px] font-mono text-amber-700/80 pl-6">
+                      <summary className="cursor-pointer hover:text-amber-900">
+                        Diagnostiikka
+                      </summary>
+                      <pre className="mt-1 p-2 bg-white/50 rounded overflow-x-auto whitespace-pre-wrap break-all">
+                        {JSON.stringify(
+                          {
+                            urlRef: urlWallHeightRef.current,
+                            localStorage:
+                              typeof window !== "undefined"
+                                ? localStorage.getItem(
+                                    "facadeStoredWallHeight",
+                                  )
+                                : null,
+                            sessionStorage:
+                              typeof window !== "undefined"
+                                ? sessionStorage.getItem("facadeSession")
+                                    ?.slice(0, 80) ?? null
+                                : null,
+                            project: project
+                              ? { walls: project.measurements.length }
+                              : null,
+                          },
+                          null,
+                          2,
+                        )}
+                      </pre>
+                    </details>
                   </div>
                 ))}
 

@@ -188,23 +188,60 @@ export default function ResultPage() {
 
   const handleNextWall = () => {
     sessionStorage.removeItem("facadeSession");
-    // Pass the wall height as a URL parameter as a robust fallback for
-    // browsers (notably iOS Safari) that may clear localStorage between
-    // page navigations or block storage access in private mode.
-    // Prefer the value we just stored on this page; fall back to
-    // localStorage if the React state was cleared somehow.
-    const fromState = lastStoredWallHeightM;
-    const fromStorage = getStoredWallHeight();
-    const wh =
-      fromState && fromState > 0
-        ? fromState
-        : fromStorage && fromStorage.valueM > 0
-          ? fromStorage.valueM
-          : null;
+
+    // Resolve the wall height from MULTIPLE sources and use the first one
+    // that succeeds. This is robust against any combination of stale
+    // React state, blocked localStorage and missing measurements.
+    //
+    //   1. Recompute from the current polygon + reference (most reliable
+    //      because it doesn't depend on any prior side effect)
+    //   2. React state captured during handleCalculate
+    //   3. localStorage (might be wiped by browser)
+    //   4. Reference meters (if user drew a vertical reference at the
+    //      wall corner)
+    //
+    // We also always try to re-persist whatever value we end up with, so
+    // that the next page has the maximum chance of seeing it.
+    let wh: number | null = null;
+    let source = "none";
+
+    const activeReference = session?.reference;
+    const activePoly = polygon ?? session?.polygon;
+    const ppm = activeReference?.pixelsPerMeter ?? 0;
+    if (activePoly && ppm > 0) {
+      const recomputed = estimateWallHeightM(activePoly.points, ppm);
+      if (recomputed && recomputed > 0) {
+        wh = recomputed;
+        source = "recomputed-from-polygon";
+      }
+    }
+    if (wh === null && lastStoredWallHeightM && lastStoredWallHeightM > 0) {
+      wh = lastStoredWallHeightM;
+      source = "react-state";
+    }
+    if (wh === null) {
+      const fromStorage = getStoredWallHeight();
+      if (fromStorage && fromStorage.valueM > 0) {
+        wh = fromStorage.valueM;
+        source = "localStorage";
+      }
+    }
+    if (wh === null && session?.autoWallHeightM && session.autoWallHeightM > 0) {
+      wh = session.autoWallHeightM;
+      source = "session-autoWallHeightM";
+    }
+
+    if (wh && wh > 0) {
+      storeWallHeight(wh);
+    }
+
     const url = wh ? `/?camera=1&wh=${wh.toFixed(4)}` : "/?camera=1";
     console.log("[result] handleNextWall →", url, {
-      fromState,
-      fromStorage,
+      wh,
+      source,
+      lastStoredWallHeightM,
+      fromStorage: getStoredWallHeight(),
+      sessionAutoWallHeight: session?.autoWallHeightM,
     });
     router.push(url);
   };
@@ -382,6 +419,35 @@ export default function ResultPage() {
                     </div>
                   )}
 
+                  {/* Visible status banner — shows exactly what wall-height
+                      will be carried to the next photo. Makes any failure
+                      immediately visible without needing devtools. */}
+                  {lastStoredWallHeightM && lastStoredWallHeightM > 0 ? (
+                    <div className="flex items-center gap-2 p-2.5 bg-white border border-emerald-300 rounded-xl text-xs text-emerald-800">
+                      <Sparkles className="w-4 h-4 shrink-0 text-emerald-600" />
+                      <span>
+                        Seuraavassa kuvassa käytetään nurkkakorkeutta{" "}
+                        <strong className="font-mono">
+                          {lastStoredWallHeightM.toFixed(2)} m
+                        </strong>{" "}
+                        — referenssimittaa ei tarvitse asettaa uudelleen.
+                      </span>
+                    </div>
+                  ) : (
+                    <div className="flex items-start gap-2 p-2.5 bg-amber-50 border border-amber-300 rounded-xl text-xs text-amber-800">
+                      <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                      <span>
+                        Nurkkakorkeutta ei pystytty tallentamaan tästä
+                        polygonista — seuraava kuva vaatii referenssimitan.
+                        {wallHeightWarning && (
+                          <span className="block mt-1">
+                            <em>{wallHeightWarning}</em>
+                          </span>
+                        )}
+                      </span>
+                    </div>
+                  )}
+
                   <button
                     onClick={handleNextWall}
                     className="w-full flex items-center justify-center gap-2 py-3.5 bg-gradient-to-br from-emerald-500 to-emerald-600 hover:from-emerald-600 hover:to-emerald-700 text-white rounded-xl text-base font-bold shadow-lg shadow-emerald-200 transition-colors"
@@ -390,10 +456,6 @@ export default function ResultPage() {
                     Mittaa seuraava seinä
                     <Plus className="w-4 h-4" />
                   </button>
-                  <p className="text-xs text-slate-500 text-center">
-                    Kamera aukeaa heti — sovellus käyttää automaattisesti
-                    tallennettua nurkkakorkeutta.
-                  </p>
                 </div>
               )}
 
