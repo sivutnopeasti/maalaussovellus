@@ -8,10 +8,8 @@ import {
   buildLineMap,
   snapToNearestLine,
   isLikelyIntersection,
-  intersectLineAndDepthEdge,
   type LineMapData,
 } from "@/lib/lineSnap";
-import { buildDepthEdgeMask } from "@/lib/depthEdge";
 import { useCanvasViewport } from "@/lib/useCanvasViewport";
 import ZoomControls from "./ZoomControls";
 
@@ -36,14 +34,6 @@ interface Props {
    * pixel-accurate.
    */
   mlsdMapUrl?: string;
-  /**
-   * URL of the depth map (bright = near, dark = far). When also
-   * provided, the snap mask is restricted to MLSD lines that lie on
-   * the depth silhouette — i.e. on the boundary between the house and
-   * the background. This filters out interior detail lines (windows,
-   * panel joints) so clicks only snap to the actual facade outline.
-   */
-  depthMapUrl?: string;
 }
 
 type Phase = "drawing" | "done";
@@ -66,29 +56,12 @@ export default function PolygonSelect({
   reference,
   autoWallHeightM,
   mlsdMapUrl,
-  depthMapUrl,
 }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const debugCanvasRef = useRef<HTMLCanvasElement>(null);
   const imageRef = useRef<HTMLImageElement | null>(null);
   const mlsdImageRef = useRef<HTMLImageElement | null>(null);
-  /** Raw MLSD-only line map. Always populated once the MLSD image
-   *  arrives — used for snapping until the depth map is ready, then
-   *  replaced by the intersected mask in `lineMapRef`. */
-  const rawLineMapRef = useRef<LineMapData | null>(null);
-  /** Active snap mask: either raw MLSD lines (initial state) or MLSD ∩
-   *  depth-silhouette (preferred, set once the depth map decodes). */
   const lineMapRef = useRef<LineMapData | null>(null);
-  /** Cached depth-edge mask + its native dimensions, so we can rebuild
-   *  the intersection if/when the MLSD map updates after the depth one. */
-  const depthEdgeRef = useRef<{
-    width: number;
-    height: number;
-    mask: Uint8Array;
-  } | null>(null);
-  const [snapMode, setSnapMode] = useState<"none" | "mlsd" | "mlsd+depth">(
-    "none",
-  );
   const [lineMapReady, setLineMapReady] = useState(false);
   const [snapEnabled, setSnapEnabled] = useState(true);
   const [points, setPoints] = useState<Point[]>([]);
@@ -141,50 +114,6 @@ export default function PolygonSelect({
     img.src = imageUrl;
   }, [imageUrl]);
 
-  /** Recompute the active snap mask from the cached raw line map and
-   *  the cached depth-edge mask. Updates `lineMapRef`, `mlsdStats` and
-   *  `snapMode` as a side-effect. */
-  const updateActiveMask = useCallback(() => {
-    const raw = rawLineMapRef.current;
-    if (!raw) return;
-    const depth = depthEdgeRef.current;
-    if (depth) {
-      const intersected = intersectLineAndDepthEdge(
-        raw,
-        depth.width,
-        depth.height,
-        depth.mask,
-      );
-      if (intersected) {
-        lineMapRef.current = intersected;
-        setMlsdStats({
-          lmW: intersected.width,
-          lmH: intersected.height,
-          whitePixels: intersected.whitePixels,
-          whiteRatio: intersected.whiteRatio,
-        });
-        setSnapMode("mlsd+depth");
-        console.log("[snap] MLSD ∩ depth-edge active", {
-          whitePixels: intersected.whitePixels,
-          whiteRatio: (intersected.whiteRatio * 100).toFixed(2) + "%",
-        });
-        return;
-      }
-      console.warn(
-        "[snap] depth-edge intersection is empty — falling back to raw MLSD",
-      );
-    }
-    // Fallback: raw MLSD lines only
-    lineMapRef.current = raw;
-    setMlsdStats((s) => ({
-      lmW: raw.width,
-      lmH: raw.height,
-      whitePixels: s ? s.whitePixels : 0,
-      whiteRatio: s ? s.whiteRatio : 0,
-    }));
-    setSnapMode("mlsd");
-  }, []);
-
   // Load and decode the M-LSD line map for click snapping. We do this
   // off-screen as soon as the URL is available — typically before the
   // user has finished placing their first point. The decoded HTMLImage
@@ -198,7 +127,7 @@ export default function PolygonSelect({
       if (cancelled) return;
       try {
         const lm = buildLineMap(img);
-        rawLineMapRef.current = lm;
+        lineMapRef.current = lm;
         mlsdImageRef.current = img;
         setMlsdStats({
           lmW: lm.width,
@@ -213,7 +142,6 @@ export default function PolygonSelect({
           whitePixels: lm.whitePixels,
           whiteRatio: (lm.whiteRatio * 100).toFixed(2) + "%",
         });
-        updateActiveMask();
       } catch (err) {
         console.warn("[snap] failed to decode MLSD map (likely CORS)", err);
       }
@@ -225,41 +153,7 @@ export default function PolygonSelect({
     return () => {
       cancelled = true;
     };
-  }, [mlsdMapUrl, imageWidth, imageHeight, updateActiveMask]);
-
-  // Load and decode the depth map → silhouette edge mask. As soon as it
-  // arrives we recompute the active snap mask to intersect MLSD lines
-  // with the depth silhouette.
-  useEffect(() => {
-    if (!depthMapUrl) return;
-    let cancelled = false;
-    const img = new Image();
-    img.crossOrigin = "anonymous";
-    img.onload = () => {
-      if (cancelled) return;
-      try {
-        const depthMask = buildDepthEdgeMask(img);
-        depthEdgeRef.current = depthMask;
-        console.log("[snap] depth-edge mask built", {
-          size: `${depthMask.width}×${depthMask.height}`,
-          edgePixels: depthMask.edgePixels,
-          edgeRatio:
-            ((depthMask.edgePixels / (depthMask.width * depthMask.height)) *
-              100).toFixed(2) + "%",
-        });
-        updateActiveMask();
-      } catch (err) {
-        console.warn("[snap] failed to decode depth map (likely CORS)", err);
-      }
-    };
-    img.onerror = () => {
-      if (!cancelled) console.warn("[snap] depth image failed to load");
-    };
-    img.src = depthMapUrl;
-    return () => {
-      cancelled = true;
-    };
-  }, [depthMapUrl, updateActiveMask]);
+  }, [mlsdMapUrl, imageWidth, imageHeight]);
 
   // Effective pixels-per-meter for the segment labels. Two sources:
   //  1) Manual reference (`reference.pixelsPerMeter`) — used in photo 1.
@@ -456,45 +350,27 @@ export default function PolygonSelect({
    *  currently-active snap mask underneath (raw MLSD lines OR the
    *  MLSD ∩ depth-edge intersection) so the user can visually verify
    *  that polygon clicks land on detected silhouette edges. */
+  /** Debug canvas — same dimensions as the main one, but the M-LSD line
+   *  raster underneath instead of the source photo. Lets the user check
+   *  visually whether the polygon edges they're drawing land on detected
+   *  building lines. Temporary feature. */
   const redrawDebug = useCallback(() => {
     const canvas = debugCanvasRef.current;
-    const lm = lineMapRef.current;
-    if (!canvas || !lm || canvasSize.w === 0) return;
+    const mlsd = mlsdImageRef.current;
+    if (!canvas || !mlsd || canvasSize.w === 0) return;
     const ctx = canvas.getContext("2d")!;
     viewport.resetTransform(ctx);
     ctx.fillStyle = "#000";
     ctx.fillRect(0, 0, canvas.width, canvas.height);
     viewport.applyTransform(ctx);
-
-    // Render the active mask. It's typically at MLSD resolution
-    // (1024² for Fal), so we put it on an off-screen canvas first then
-    // scale it onto the debug canvas.
-    const offscreen = document.createElement("canvas");
-    offscreen.width = lm.width;
-    offscreen.height = lm.height;
-    const offCtx = offscreen.getContext("2d")!;
-    const imgData = offCtx.createImageData(lm.width, lm.height);
-    const data = imgData.data;
-    const tintCyan = snapMode === "mlsd+depth";
-    for (let i = 0, j = 0; i < lm.mask.length; i++, j += 4) {
-      if (lm.mask[i]) {
-        data[j] = tintCyan ? 34 : 255;
-        data[j + 1] = tintCyan ? 211 : 255;
-        data[j + 2] = tintCyan ? 238 : 255;
-        data[j + 3] = 255;
-      } else {
-        data[j + 3] = 0;
-      }
-    }
-    offCtx.putImageData(imgData, 0, 0);
-    ctx.drawImage(offscreen, 0, 0, canvasSize.w, canvasSize.h);
+    ctx.drawImage(mlsd, 0, 0, canvasSize.w, canvasSize.h);
     drawOverlay(ctx, canvas);
-  }, [canvasSize, drawOverlay, snapMode, viewport]);
+  }, [canvasSize, drawOverlay, viewport]);
 
   useEffect(() => {
     redraw();
     redrawDebug();
-  }, [redraw, redrawDebug, lineMapReady, snapMode]);
+  }, [redraw, redrawDebug, lineMapReady]);
 
   /** Resolve the snap target for a given raw point in image-space.
    *  Returns the snapped point + diagnostic info, or null when snap is
@@ -671,19 +547,10 @@ export default function PolygonSelect({
               {!lineMapReady ? (
                 <span className="text-cyan-600">— ladataan…</span>
               ) : snapEnabled ? (
-                <>
-                  <span className="text-cyan-700 font-medium">
-                    {snapMode === "mlsd+depth"
-                      ? "talon silhuetti tunnistettu"
-                      : "MLSD-viivat tunnistettu"}
-                  </span>
-                  <span> — syaaninen piste hiiren alla näyttää mihin klikkaus snäppää.</span>
-                  {snapMode === "mlsd" && depthMapUrl && (
-                    <span className="text-cyan-500 block">
-                      (syvyyskartta vielä ladataan — tarkkuus paranee hetken päästä)
-                    </span>
-                  )}
-                </>
+                <span>
+                  — <span className="text-cyan-700 font-medium">syaaninen piste</span>{" "}
+                  hiiren alla näyttää mihin klikkaus snäppää.
+                </span>
               ) : (
                 <span className="text-cyan-600">— pois käytöstä.</span>
               )}
@@ -739,34 +606,16 @@ export default function PolygonSelect({
         <div className="space-y-1.5">
           <div className="flex items-center justify-between text-xs">
             <span className="font-semibold text-cyan-700">
-              {snapMode === "mlsd+depth"
-                ? "Talon silhuetti (MLSD ∩ syvyysraja)"
-                : "MLSD-viivakartta (debug)"}
+              MLSD-viivakartta (debug)
             </span>
             <span className="text-slate-400">
-              Snap-pikselit + polygoni päällä
+              Tunnistetut rakennusreunat + sama polygoni päällä
             </span>
           </div>
 
           {/* Diagnostic stats — helps see WHY snap might fail */}
           {mlsdStats && (
             <div className="text-[10px] leading-tight font-mono px-2 py-1.5 bg-slate-50 border border-slate-200 rounded text-slate-600 space-y-0.5">
-              <div>
-                Snap-tila:{" "}
-                <strong
-                  className={
-                    snapMode === "mlsd+depth"
-                      ? "text-emerald-700"
-                      : "text-amber-700"
-                  }
-                >
-                  {snapMode === "mlsd+depth"
-                    ? "MLSD ∩ syvyysraja"
-                    : snapMode === "mlsd"
-                      ? "vain MLSD"
-                      : "ei valmis"}
-                </strong>
-              </div>
               <div>
                 MLSD: <strong>{mlsdStats.lmW}×{mlsdStats.lmH}</strong>{" "}
                 · source: <strong>{imageWidth}×{imageHeight}</strong>{" "}
@@ -782,7 +631,7 @@ export default function PolygonSelect({
                 )}
               </div>
               <div>
-                Aktiivisia pikseleitä:{" "}
+                Valkoisia pikseleitä:{" "}
                 <strong>{mlsdStats.whitePixels.toLocaleString()}</strong>{" "}
                 ({(mlsdStats.whiteRatio * 100).toFixed(2)}%){" "}
                 {mlsdStats.whitePixels < 100 && (

@@ -29,58 +29,6 @@ export interface LineMapData {
 }
 
 /**
- * Intersect an MLSD line mask with a depth-edge mask (possibly at a
- * different resolution) to produce a "house silhouette line" mask.
- *
- * For each pixel in the line mask, look up whether the corresponding
- * pixel in the depth-edge mask is also set. Output dimensions follow
- * the line mask. The two masks need not have the same aspect ratio —
- * we sample the depth mask by nearest-neighbour scaling, which is more
- * than enough given the depth-edge mask is already dilated.
- *
- * Returns null if the intersection has too few pixels (< 0.05% of
- * total), suggesting the depth map didn't usefully separate fore- and
- * background. Callers should fall back to the raw line mask in that
- * case.
- */
-export function intersectLineAndDepthEdge(
-  lineMap: LineMapData,
-  depthMaskWidth: number,
-  depthMaskHeight: number,
-  depthMask: Uint8Array,
-  minRetainedRatio = 0.0005,
-): LineMapData & { whitePixels: number; whiteRatio: number } | null {
-  const w = lineMap.width;
-  const h = lineMap.height;
-  const out = new Uint8Array(w * h);
-  const sx = depthMaskWidth / w;
-  const sy = depthMaskHeight / h;
-  let kept = 0;
-  for (let y = 0; y < h; y++) {
-    const dy = Math.min(depthMaskHeight - 1, (y * sy) | 0);
-    const rowOut = y * w;
-    const rowD = dy * depthMaskWidth;
-    for (let x = 0; x < w; x++) {
-      if (!lineMap.mask[rowOut + x]) continue;
-      const dx = Math.min(depthMaskWidth - 1, (x * sx) | 0);
-      if (depthMask[rowD + dx]) {
-        out[rowOut + x] = 1;
-        kept++;
-      }
-    }
-  }
-  const ratio = kept / (w * h);
-  if (ratio < minRetainedRatio) return null;
-  return {
-    width: w,
-    height: h,
-    mask: out,
-    whitePixels: kept,
-    whiteRatio: ratio,
-  };
-}
-
-/**
  * Decode an HTMLImageElement (already loaded) of an M-LSD raster into a
  * compact `LineMapData` ready for snapping. We treat anything brighter
  * than `threshold` (default 80, lowered from 128 to also pick up

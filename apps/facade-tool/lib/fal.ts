@@ -28,26 +28,3 @@ export async function runMlsdLineDetection(
   });
   return result.data as MlsdLineMapOutput;
 }
-
-export interface DepthMapOutput {
-  image: { url: string; width?: number; height?: number };
-}
-
-/**
- * Run monocular depth estimation on a hosted image.
- *
- * Returns a greyscale raster where bright = near (the house, in our use
- * case) and dark = far (the background). The polygon-snap feature uses
- * this raster to identify which detected MLSD lines lie on the house
- * SILHOUETTE — i.e. on the boundary between bright and dark depth
- * regions — so user clicks snap onto the true facade outline rather
- * than onto any incidental line elsewhere in the photo.
- */
-export async function runDepthEstimation(
-  imageUrl: string,
-): Promise<DepthMapOutput> {
-  const result = await fal.subscribe("fal-ai/imageutils/depth", {
-    input: { image_url: imageUrl },
-  });
-  return result.data as DepthMapOutput;
-}

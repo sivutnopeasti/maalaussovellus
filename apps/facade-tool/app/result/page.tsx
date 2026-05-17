@@ -63,9 +63,6 @@ export default function ResultPage() {
   /** M-LSD line map URL — fetched asynchronously when this page loads,
    *  then passed to PolygonSelect for click-snapping. */
   const [mlsdMapUrl, setMlsdMapUrl] = useState<string | null>(null);
-  /** Depth map URL — fetched in parallel with MLSD. Used in tandem with
-   *  the line map to restrict snapping to the house silhouette. */
-  const [depthMapUrl, setDepthMapUrl] = useState<string | null>(null);
 
   useEffect(() => {
     const raw = sessionStorage.getItem("facadeSession");
@@ -77,11 +74,10 @@ export default function ResultPage() {
     setSession(s);
     setProject(getProject());
 
-    // Kick off MLSD line detection AND depth estimation in parallel.
-    // We don't block the page on either — the snap feature progressively
-    // upgrades from "no snap" → "MLSD-only snap" → "MLSD ∩ depth snap"
-    // as results arrive (typically within a few seconds, while the user
-    // is still placing their first corner).
+    // Kick off MLSD line detection in the background. We don't block the
+    // page on it — the snap feature lights up once the result arrives
+    // (typically a couple of seconds later, while the user is still
+    // placing their first corner).
     let cancelled = false;
     void (async () => {
       try {
@@ -95,20 +91,6 @@ export default function ResultPage() {
         if (!cancelled && url) setMlsdMapUrl(url);
       } catch (err) {
         if (!cancelled) console.warn("[result] MLSD fetch failed", err);
-      }
-    })();
-    void (async () => {
-      try {
-        const res = await fetch("/api/depth", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ imageUrl: s.uploadedImageUrl }),
-        });
-        if (!res.ok) return;
-        const { url } = (await res.json()) as { url?: string };
-        if (!cancelled && url) setDepthMapUrl(url);
-      } catch (err) {
-        if (!cancelled) console.warn("[result] depth fetch failed", err);
       }
     })();
     return () => {
@@ -393,7 +375,6 @@ export default function ResultPage() {
                   reference={session.reference}
                   autoWallHeightM={session.autoWallHeightM}
                   mlsdMapUrl={mlsdMapUrl ?? undefined}
-                  depthMapUrl={depthMapUrl ?? undefined}
                 />
                 {hasPolygon && (
                   <button
