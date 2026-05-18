@@ -181,6 +181,10 @@ export default function CameraCapture({
     onClose();
   }, [onClose]);
 
+  const handleActivateLevel = useCallback(() => {
+    void requestIOSOrientationAndAttach();
+  }, []);
+
   const handleCapture = useCallback(async () => {
     if (isIosMotionApi && !orientationListenerActive()) {
       await requestIOSOrientationAndAttach();
@@ -260,27 +264,26 @@ export default function CameraCapture({
         )}
       </div>
 
-      {/* Bottom controls — shutter with optional iOS level button on top */}
+      {/* Bottom controls — iOS: activate level above shutter; then capture */}
       <div className="px-6 py-6 bg-black/80 flex flex-col items-center gap-3">
-        <div className="relative w-20 h-20 shrink-0">
+        {isIosMotionApi && !orientationListenerActive() && (
+          <button
+            type="button"
+            onClick={handleActivateLevel}
+            disabled={starting || !!error}
+            className="w-full max-w-xs px-3 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-xs font-semibold shadow-lg text-center"
+          >
+            Aktivoi vesivaaka
+          </button>
+        )}
+        <div className="w-20 h-20 shrink-0">
           <button
             type="button"
             onClick={handleCapture}
             disabled={starting || !!error}
             className="relative w-20 h-20 rounded-full bg-white disabled:bg-white/40 flex items-center justify-center active:scale-95 transition-transform"
-            title={
-              isIosMotionApi && !orientationListenerActive()
-                ? "Salli liikeanturi ja ota kuva"
-                : "Ota kuva"
-            }
+            title="Ota kuva"
           >
-            {isIosMotionApi && !orientationListenerActive() && (
-              <span className="absolute inset-0 z-10 flex items-center justify-center px-1 pointer-events-none">
-                <span className="bg-blue-600/95 text-white text-[8px] font-bold leading-tight text-center rounded-md px-1.5 py-1 shadow-md max-w-[4.5rem]">
-                  Aktivoi vesivaaka
-                </span>
-              </span>
-            )}
             <div
               className={`w-16 h-16 rounded-full border-4 transition-colors ${
                 isLevel
