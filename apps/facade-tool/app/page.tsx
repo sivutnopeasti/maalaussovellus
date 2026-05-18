@@ -182,8 +182,14 @@ export default function HomePage() {
       const img = new Image();
       img.onload = () => {
         setImageDims({ w: img.width, h: img.height });
-        const wh = wallHeightRef.current ?? storedWallHeightM;
+        const fromStorage = getStoredWallHeight()?.valueM;
+        const wh =
+          wallHeightRef.current ??
+          storedWallHeightM ??
+          (fromStorage && fromStorage > 0 ? fromStorage : null);
         if (wh && wh > 0) {
+          // Keep ref in sync so analyse sees the same height even if state lagged.
+          wallHeightRef.current = wallHeightRef.current ?? wh;
           // Auto-mode: skip the reference step entirely
           setStep("poly-intro");
         } else {
@@ -288,18 +294,35 @@ export default function HomePage() {
           },
         );
 
-        // Persist into the project + remember the wall height for next photo
         const updated = addMeasurement(result.wallAreaM2);
         setProject(updated);
 
-        const newWh = estimateWallHeightM(
+        // Persist into the project + remember the wall height for next photo.
+        // Always store something when analysis succeeded: prefer a geometry
+        // estimate, but fall back to the reference segment height (user input
+        // on wall 1, or known auto height on wall 2+). Previously we only
+        // stored when the estimate landed in 1–25 m; if it was null or out of
+        // range, the next capture incorrectly returned to ref-intro.
+        const estimatedWh = estimateWallHeightM(
           data.points,
           activeReference.pixelsPerMeter,
         );
-        if (newWh !== null && newWh > 1 && newWh < 25) {
-          storeWallHeight(newWh);
-          setStoredWallHeightM(newWh);
-          wallHeightRef.current = newWh;
+        const refMeters = activeReference.meters;
+        let persistedWh: number | null = null;
+        if (
+          estimatedWh !== null &&
+          Number.isFinite(estimatedWh) &&
+          estimatedWh > 0.3 &&
+          estimatedWh < 80
+        ) {
+          persistedWh = estimatedWh;
+        } else if (Number.isFinite(refMeters) && refMeters > 0) {
+          persistedWh = refMeters;
+        }
+        if (persistedWh !== null) {
+          storeWallHeight(persistedWh);
+          setStoredWallHeightM(persistedWh);
+          wallHeightRef.current = persistedWh;
         }
 
         // Cache the analysed session in sessionStorage purely for any
