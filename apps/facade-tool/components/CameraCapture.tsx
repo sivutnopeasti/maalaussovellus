@@ -41,6 +41,15 @@ function releaseSharedCameraStream() {
 
 const STORAGE_CAM_GRANT = "facade-camera-granted";
 
+/** Level UX only (gamma). Does not affect `CaptureTilt` / measurement. */
+const ROLL_SMOOTH_ALPHA = 0.14;
+/** Green: enter when |γ| ≤ enter; while already green, stay until |γ| > exit. */
+const TILT_LEVEL_ENTER_DEG = 4;
+const TILT_LEVEL_EXIT_DEG = 6;
+/** Red: enter when |γ| > enter; while red, stay until |γ| < exit. */
+const TILT_BAD_ENTER_DEG = 10;
+const TILT_BAD_EXIT_DEG = 8;
+
 function streamStillUsable(stream: MediaStream | null): boolean {
   if (!stream) return false;
   const v = stream.getVideoTracks()[0];
@@ -70,12 +79,48 @@ export default function CameraCapture({
     getOrientationStoreVersion,
     () => 0,
   );
-  const { gamma, beta } = readOrientationAngles();
+  const { gamma } = readOrientationAngles();
 
-  // Sivuttainen kallistus (roll / γ). Vain tämä näytetään käyttäjälle.
+  // Sivuttainen kallistus (roll / γ). Näytetään tasoituksella; mittaus käyttää
+  // kuvaushetkellä raakaa anturia `handleCapture`-kohdassa.
   const roll = gamma;
-  // Pitch (β) tallennetaan silti pystyperspektiivin korjausta varten,
-  // mutta sitä ei näytetä.
+
+  const smoothRef = useRef<number | null>(null);
+  const [displayRoll, setDisplayRoll] = useState<number | null>(null);
+  const [levelLatched, setLevelLatched] = useState(false);
+  const [badLatched, setBadLatched] = useState(false);
+
+  useEffect(() => {
+    if (roll === null) {
+      smoothRef.current = null;
+      setDisplayRoll(null);
+      return;
+    }
+    if (smoothRef.current === null) {
+      smoothRef.current = roll;
+      setDisplayRoll(roll);
+      return;
+    }
+    const next =
+      ROLL_SMOOTH_ALPHA * roll + (1 - ROLL_SMOOTH_ALPHA) * smoothRef.current;
+    smoothRef.current = next;
+    setDisplayRoll(next);
+  }, [roll]);
+
+  useEffect(() => {
+    if (displayRoll === null) {
+      setLevelLatched(false);
+      setBadLatched(false);
+      return;
+    }
+    const a = Math.abs(displayRoll);
+    setLevelLatched((prev) =>
+      prev ? a <= TILT_LEVEL_EXIT_DEG : a <= TILT_LEVEL_ENTER_DEG,
+    );
+    setBadLatched((prev) =>
+      prev ? a > TILT_BAD_EXIT_DEG : a > TILT_BAD_ENTER_DEG,
+    );
+  }, [displayRoll]);
 
   const DOE =
     typeof window !== "undefined"
@@ -171,10 +216,8 @@ export default function CameraCapture({
     }
   }, [DOE, isIosMotionApi]);
 
-  const TILT_OK = 2;
-  const TILT_WARN = 5;
-  const isLevel = roll !== null && Math.abs(roll) <= TILT_OK;
-  const isBad = roll !== null && Math.abs(roll) > TILT_WARN;
+  const isLevel = levelLatched;
+  const isBad = badLatched;
 
   const handleClose = useCallback(() => {
     releaseSharedCameraStream();
@@ -192,6 +235,7 @@ export default function CameraCapture({
     const video = videoRef.current;
     if (!video || !sharedCameraStream) return;
     const { beta: bNow, gamma: gNow } = readOrientationAngles();
+    // β/γ tallennetaan kuvaan liittyvään mittaukseen; vesivaakan γ-tasoitusta ei käytetä tässä.
     const canvas = document.createElement("canvas");
     canvas.width = video.videoWidth;
     canvas.height = video.videoHeight;
@@ -259,7 +303,7 @@ export default function CameraCapture({
             />
 
             {/* Horizontal level line — the only visible level indicator */}
-            <LevelLine roll={roll} isLevel={isLevel} isBad={isBad} />
+            <LevelLine roll={displayRoll} isLevel={isLevel} isBad={isBad} />
           </>
         )}
       </div>
@@ -330,7 +374,7 @@ function LevelLine({ roll, isLevel, isBad }: LevelLineProps) {
   return (
     <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
       <div
-        className="transition-transform duration-100"
+        className="transition-transform duration-200 ease-out"
         style={{ transform: `rotate(${angle.toFixed(2)}deg)` }}
       >
         <div
