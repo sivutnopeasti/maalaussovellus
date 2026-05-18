@@ -1,0 +1,13 @@
+---
+description: After code changes, commit, push to origin; deploy follows from Git host
+alwaysApply: true
+---
+
+# Commit, push, and deployment
+
+When you finish a task that changes the codebase (features, fixes, refactors the user asked for):
+
+1. **Commit** all relevant changes with a short, accurate message (and optional body). Follow the repo’s existing commit style (`scope: summary`). Do not commit secrets (`.env`, keys).
+2. **Push** to the tracked remote branch (usually `origin/master` or `origin/main`). Do not force-push to the default branch unless the user explicitly requests it. Do not use `--no-verify`.
+3. **Deploy**: This app uses **Vercel** with repo push as the primary trigger—after a successful push, production/staging should build from the Git integration. If there is no linked CLI project locally, **do not assume `vercel deploy` is available**; rely on push-triggered deploy and tell the user to confirm the build in the Vercel dashboard if needed.
+4. Skip commit/push only if the user clearly says not to in that message, or if there are no file changes.
