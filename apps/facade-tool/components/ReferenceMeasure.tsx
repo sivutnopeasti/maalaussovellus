@@ -7,6 +7,7 @@ import { useCanvasViewport } from "@/lib/useCanvasViewport";
 import { drawLoupe } from "@/lib/canvasLoupe";
 import {
   buildLineMap,
+  inferOpeningWidthFromMlsd,
   snapToNearestLine,
   type LineMapData,
 } from "@/lib/lineSnap";
@@ -514,6 +515,25 @@ export default function ReferenceMeasure({
       if (hitTest(img) !== null) return;
 
       if (phase === "point1") {
+        if (lineMapReady && lineMapRef.current) {
+          const span = inferOpeningWidthFromMlsd(
+            img,
+            lineMapRef.current,
+            srcW,
+            srcH,
+          );
+          if (span) {
+            const left = applyRefPoint(span.left, 0);
+            const right = applyRefPoint(span.right, 1, left.y);
+            const dist = Math.hypot(right.x - left.x, right.y - left.y);
+            const minW = Math.min(srcW, srcH) * 0.015;
+            if (dist >= minW) {
+              setPoints([left, right]);
+              setPhase("input");
+              return;
+            }
+          }
+        }
         const p = applyRefPoint(img, 0);
         setPoints([p]);
         setPhase("point2");
@@ -525,7 +545,7 @@ export default function ReferenceMeasure({
         setPhase("input");
       }
     },
-    [phase, viewport, eventToImage, hitTest, applyRefPoint],
+    [phase, viewport, eventToImage, hitTest, applyRefPoint, lineMapReady, srcW, srcH],
   );
 
   // ── Confirm / reset ────────────────────────────────────────────────
@@ -578,9 +598,10 @@ export default function ReferenceMeasure({
         <Ruler className="w-4 h-4 text-blue-600 shrink-0" />
         {phase === "point1" && (
           <span className="text-blue-700 font-medium">
-            <strong>Vaakasuora</strong> referenssi: aseta{" "}
-            <strong>alkupiste</strong> tunnetun mittaviivan (esim. oven yläreuna)
-            päähän. Piste snäppää lähimmälle MLSD-reunalle.
+            <strong>Vaakasuora</strong> referenssi (ovi / ikkuna): napauta{" "}
+            <strong>aukon keskelle</strong> tai reunaviivan lähelle — viiva asettuu
+            automaattisesti MLSD-pielien väliin, kun viivakartta on valmis.
+            Muuten kaksi napautusta kuten ennen (alku → loppu).
           </span>
         )}
         {phase === "point2" && (

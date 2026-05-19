@@ -424,3 +424,144 @@ function refineCornerCentroid(
   if (n === 0) return { x, y };
   return { x: sx / n, y: sy / n };
 }
+
+/** Merge adjacent peak columns; keep the column with the strongest blurred score. */
+function mergePeakColumns(
+  peaks: number[],
+  values: Float64Array,
+  mergeDist: number,
+): number[] {
+  if (peaks.length === 0) return [];
+  peaks.sort((a, b) => a - b);
+  const out: number[] = [];
+  let cluster = [peaks[0]];
+  for (let i = 1; i <= peaks.length; i++) {
+    const p = peaks[i];
+    if (i < peaks.length && p - cluster[cluster.length - 1] <= mergeDist) {
+      cluster.push(p);
+    } else {
+      let best = cluster[0];
+      let bestV = values[best];
+      for (let j = 1; j < cluster.length; j++) {
+        const c = cluster[j];
+        if (values[c] > bestV) {
+          bestV = values[c];
+          best = c;
+        }
+      }
+      out.push(best);
+      if (i < peaks.length) cluster = [p];
+    }
+  }
+  return out;
+}
+
+/**
+ * Infer left/right jambs of a door/window-style opening from MLSD vertical
+ * line density. The user taps roughly inside or on the opening; we snap the
+ * seed to the nearest MLSD pixel, sum lit pixels per column across a horizontal
+ * band around that row, find peaks bracketing the tap, and return a horizontal
+ * segment in original-image coordinates at the seed Y.
+ *
+ * Returns null when no plausible bracketing peaks exist or span is absurd.
+ */
+export function inferOpeningWidthFromMlsd(
+  click: Point,
+  lineMap: LineMapData,
+  imageWidth: number,
+  imageHeight: number,
+): { left: Point; right: Point } | null {
+  if (imageWidth <= 0 || imageHeight <= 0) return null;
+
+  const scaleX = lineMap.width / imageWidth;
+  const scaleY = lineMap.height / imageHeight;
+  const diag = Math.hypot(imageWidth, imageHeight);
+  const snapR = diag * 0.05;
+
+  const seed =
+    snapToNearestLine(click, lineMap, snapR, scaleX, scaleY) ?? click;
+
+  const lx = Math.round(seed.x * scaleX);
+  const ly = Math.round(seed.y * scaleY);
+  const { width: wm, height: hm, mask } = lineMap;
+
+  if (lx <= 2 || lx >= wm - 3 || ly <= 2 || ly >= hm - 3) return null;
+
+  const stripHalf = Math.max(14, Math.round(Math.min(wm, hm) * 0.045));
+  const y0 = Math.max(1, ly - stripHalf);
+  const y1 = Math.min(hm - 2, ly + stripHalf);
+  const stripH = y1 - y0 + 1;
+
+  const searchHalf = Math.round(Math.min(wm, hm) * 0.26);
+  const xStart = Math.max(1, lx - searchHalf);
+  const xEnd = Math.min(wm - 2, lx + searchHalf);
+
+  const colSum = new Float64Array(wm);
+  for (let x = xStart; x <= xEnd; x++) {
+    let s = 0;
+    for (let y = y0; y <= y1; y++) s += mask[y * wm + x];
+    colSum[x] = s;
+  }
+
+  const blurred = new Float64Array(wm);
+  for (let x = xStart; x <= xEnd; x++) {
+    let acc = 0;
+    let n = 0;
+    for (let dx = -3; dx <= 3; dx++) {
+      const xx = x + dx;
+      if (xx >= xStart && xx <= xEnd) {
+        acc += colSum[xx];
+        n++;
+      }
+    }
+    blurred[x] = n > 0 ? acc / n : 0;
+  }
+
+  let maxVal = 0;
+  for (let x = xStart; x <= xEnd; x++) {
+    if (blurred[x] > maxVal) maxVal = blurred[x];
+  }
+  const minPeak = Math.max(maxVal * 0.22, stripH * 0.1);
+
+  const roughPeaks: number[] = [];
+  for (let x = xStart + 3; x <= xEnd - 3; x++) {
+    const v = blurred[x];
+    if (v < minPeak) continue;
+    let isMax = true;
+    for (let dx = -3; dx <= 3; dx++) {
+      if (dx === 0) continue;
+      if (blurred[x + dx] > v + 1e-6) {
+        isMax = false;
+        break;
+      }
+    }
+    if (isMax) roughPeaks.push(x);
+  }
+
+  const peaks = mergePeakColumns(roughPeaks, blurred, 8);
+  const leftPeaks = peaks.filter((p) => p < lx);
+  const rightPeaks = peaks.filter((p) => p > lx);
+  if (leftPeaks.length === 0 || rightPeaks.length === 0) return null;
+
+  const leftLm = Math.max(...leftPeaks);
+  const rightLm = Math.min(...rightPeaks);
+
+  const spanLm = rightLm - leftLm;
+  const minSpanLm = Math.max(18, Math.round(Math.min(wm, hm) * 0.035));
+  const maxSpanLm = Math.round(Math.min(wm, hm) * 0.92);
+  if (spanLm < minSpanLm || spanLm > maxSpanLm) return null;
+
+  let leftX = leftLm / scaleX;
+  let rightX = rightLm / scaleX;
+  const yImg = seed.y;
+  leftX = Math.max(0, Math.min(imageWidth - 1, leftX));
+  rightX = Math.max(0, Math.min(imageWidth - 1, rightX));
+
+  const minSepImg = 8 / Math.min(scaleX, scaleY);
+  if (rightX <= leftX + minSepImg) return null;
+
+  return {
+    left: { x: leftX, y: yImg },
+    right: { x: rightX, y: yImg },
+  };
+}
