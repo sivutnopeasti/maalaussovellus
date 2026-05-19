@@ -45,6 +45,9 @@ export interface LineMapData {
  *     of short dashes get welded into one connected line, which both
  *     improves visual debugging *and* makes corner detection more
  *     reliable (intersections only form between adjacent lit pixels).
+ *  3. Axis-aligned gap bridging (≤6 px in line-map space): connects
+ *     collinear dashed segments along rows and columns — helps broken
+ *     door/window outlines without another heavy morph pass.
  *
  * Returns extra diagnostic stats so the UI can show whether the raster
  * actually contains any detected lines.
@@ -85,6 +88,8 @@ export function buildLineMap(
   // segments with small gaps between them.
   let closed = morphologicalClose(raw, w, h);
   closed = morphologicalClose(closed, w, h);
+  /** Bridge slightly larger axis-aligned gaps (bad exposure / MLSD dashes). */
+  closed = bridgeAxisAlignedGaps(closed, w, h);
   let whiteCount = 0;
   for (let i = 0; i < closed.length; i++) if (closed[i]) whiteCount++;
 
@@ -155,6 +160,64 @@ function morphologicalClose(
     }
   }
   return eroded;
+}
+
+/** Max gap (px in line-map space) to weld between collinear lit runs per row/column. */
+const MAX_AXIS_GAP_BRIDGE_LM = 6;
+
+/** Connect short gaps between 1-runs along each row and column (O(w*h)). */
+function bridgeAxisAlignedGaps(src: Uint8Array, w: number, h: number): Uint8Array {
+  const out = new Uint8Array(src);
+  for (let y = 0; y < h; y++) {
+    bridgeHorizontalRunsInRow(out, y * w, w, MAX_AXIS_GAP_BRIDGE_LM);
+  }
+  for (let x = 0; x < w; x++) {
+    bridgeVerticalRunsInColumn(out, w, h, x, MAX_AXIS_GAP_BRIDGE_LM);
+  }
+  return out;
+}
+
+function bridge1DLitRuns(line: Uint8Array, len: number, maxGap: number): void {
+  const runs: { s: number; e: number }[] = [];
+  let i = 0;
+  while (i < len) {
+    while (i < len && !line[i]) i++;
+    if (i >= len) break;
+    const s = i;
+    while (i < len && line[i]) i++;
+    runs.push({ s, e: i - 1 });
+  }
+  for (let r = 0; r < runs.length - 1; r++) {
+    const gap = runs[r + 1].s - runs[r].e - 1;
+    if (gap > 0 && gap <= maxGap) {
+      for (let k = runs[r].e + 1; k < runs[r + 1].s; k++) line[k] = 1;
+    }
+  }
+}
+
+function bridgeHorizontalRunsInRow(
+  out: Uint8Array,
+  rowOffset: number,
+  w: number,
+  maxGap: number,
+): void {
+  const line = new Uint8Array(w);
+  for (let x = 0; x < w; x++) line[x] = out[rowOffset + x];
+  bridge1DLitRuns(line, w, maxGap);
+  for (let x = 0; x < w; x++) out[rowOffset + x] = line[x];
+}
+
+function bridgeVerticalRunsInColumn(
+  out: Uint8Array,
+  w: number,
+  h: number,
+  x: number,
+  maxGap: number,
+): void {
+  const line = new Uint8Array(h);
+  for (let y = 0; y < h; y++) line[y] = out[y * w + x];
+  bridge1DLitRuns(line, h, maxGap);
+  for (let y = 0; y < h; y++) out[y * w + x] = line[y];
 }
 
 /**
@@ -457,6 +520,71 @@ function mergePeakColumns(
 }
 
 /**
+ * Vertical centre (line-map Y) of opening interior: between refined jambs,
+ * prefer rows where non-line (dark) pixels dominate — object-centred height.
+ */
+function estimateInteriorVerticalCenterLm(
+  lineMap: LineMapData,
+  leftLm: number,
+  rightLm: number,
+  yHintLm: number,
+  yMinLm: number,
+  yMaxLm: number,
+): number {
+  const { width: wm, height: hm, mask } = lineMap;
+  const x0 = Math.max(1, Math.floor(leftLm));
+  const x1 = Math.min(wm - 2, Math.ceil(rightLm));
+  if (x1 <= x0) {
+    return Math.max(yMinLm, Math.min(yMaxLm, yHintLm));
+  }
+
+  let yA = Math.max(1, yMinLm);
+  let yB = Math.min(hm - 2, yMaxLm);
+  if (yB <= yA) return yHintLm;
+
+  const DARK_THRESH = 0.38;
+  let bestMin = hm;
+  let bestMax = 0;
+  let any = false;
+
+  for (let y = yA; y <= yB; y++) {
+    let dark = 0;
+    const row = y * wm;
+    for (let x = x0; x <= x1; x++) {
+      if (!mask[row + x]) dark++;
+    }
+    const ratio = dark / (x1 - x0 + 1);
+    if (ratio >= DARK_THRESH) {
+      any = true;
+      if (y < bestMin) bestMin = y;
+      if (y > bestMax) bestMax = y;
+    }
+  }
+
+  if (!any || bestMax < bestMin) {
+    return Math.max(yA, Math.min(yB, yHintLm));
+  }
+
+  let sumY = 0;
+  let sumW = 0;
+  const soft = DARK_THRESH * 0.88;
+  for (let y = bestMin; y <= bestMax; y++) {
+    let dark = 0;
+    const row = y * wm;
+    for (let x = x0; x <= x1; x++) {
+      if (!mask[row + x]) dark++;
+    }
+    const ratio = dark / (x1 - x0 + 1);
+    if (ratio >= soft) {
+      sumY += y * ratio;
+      sumW += ratio;
+    }
+  }
+  if (sumW > 1e-6) return sumY / sumW;
+  return (bestMin + bestMax) * 0.5;
+}
+
+/**
  * Within an opening's vertical band, MLSD often draws two parallel vertical
  * edges (outer frame vs inner glazing bar). On each side of the opening
  * midline we take the two strongest column peaks and average their positions —
@@ -555,8 +683,8 @@ function refineOpeningBBoxJambs(
  * Infer left/right jambs of a door/window-style opening from MLSD vertical
  * line density. The user taps roughly inside or on the opening; we snap the
  * seed to the nearest MLSD pixel, sum lit pixels per column across a horizontal
- * band around that row, find peaks bracketing the tap, and return a horizontal
- * segment in original-image coordinates at the seed Y.
+ * band around that row, find peaks bracketing the tap, refine jambs, then
+ * place Y at the interior vertical centre between jambs (dark rows).
  *
  * Returns null when no plausible bracketing peaks exist or span is absurd.
  */
@@ -656,7 +784,18 @@ export function inferOpeningWidthFromMlsd(
 
   let leftX = leftLm / scaleX;
   let rightX = rightLm / scaleX;
-  const yImg = seed.y;
+  const yLm = estimateInteriorVerticalCenterLm(
+    lineMap,
+    leftLm,
+    rightLm,
+    ly,
+    y0,
+    y1,
+  );
+  const yImg = Math.max(
+    0,
+    Math.min(imageHeight - 1, yLm / scaleY),
+  );
   leftX = Math.max(0, Math.min(imageWidth - 1, leftX));
   rightX = Math.max(0, Math.min(imageWidth - 1, rightX));
 
@@ -697,9 +836,9 @@ function nearestInteriorPixel(
  * User taps once inside a dark (non-line) opening in the MLSD map (window/door
  * interior). We flood-fill through mask==0 pixels within a Chebyshev radius of
  * that interior seed so the region does not leak across the whole facade, take
- * the axis-aligned bounding box, then refine horizontal endpoints using dual
- * vertical peaks (outer vs inner frame lines). Returns a horizontal segment at
- * mid-height.
+ * the axis-aligned bounding box, then refine horizontal endpoints with
+ * refineOpeningBBoxJambs. The horizontal segment is placed at the interior
+ * vertical centre between jambs (dark-pixel band), not merely bbox mid-Y.
  *
  * Falls back callers should try `inferOpeningWidthFromMlsd` if this returns null.
  */
@@ -776,18 +915,25 @@ export function inferOpeningFromInteriorClick(
   if (wLm < 10 || hLm < 12) return null;
   if (wLm > wm * 0.78 || hLm > hm * 0.78) return null;
 
-  const yMidLm = (minY + maxY) * 0.5;
-  const yImg = Math.max(
-    0,
-    Math.min(imageHeight - 1, yMidLm / scaleY),
-  );
-
   const { leftLm, rightLm } = refineOpeningBBoxJambs(
     lineMap,
     minY,
     maxY,
     minX,
     maxX,
+  );
+
+  const yLm = estimateInteriorVerticalCenterLm(
+    lineMap,
+    leftLm,
+    rightLm,
+    ly,
+    minY,
+    maxY,
+  );
+  const yImg = Math.max(
+    0,
+    Math.min(imageHeight - 1, yLm / scaleY),
   );
 
   let leftX = leftLm / scaleX;
