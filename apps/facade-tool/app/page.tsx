@@ -410,9 +410,9 @@ export default function HomePage() {
           }
           hint={
             wallCount === 0
-              ? "Aloita päätyseinästä. Pidä puhelin suorassa."
+              ? "Aloita päätyseinästä. Vesivaaka vihertää kun puhelin on suorassa."
               : autoMode
-                ? "Sovellus käyttää tallennettua nurkkakorkeutta."
+                ? "Referenssivaihe ohitetaan — rajaa vain nurkat."
                 : "Asetu kohtisuoraan seinään nähden."
           }
         />
@@ -596,7 +596,7 @@ function ReferenceDrawScreen({
           <Check className="w-5 h-5" />
           {canConfirm
             ? `Jatka — ${reference!.meters} m`
-            : "Piirrä viiva ja anna mitta"}
+            : "Napauta aukko tai piirrä viiva"}
         </button>
       </div>
     </div>

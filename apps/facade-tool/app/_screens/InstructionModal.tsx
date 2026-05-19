@@ -8,8 +8,7 @@ export type InstructionKind = "reference" | "polygon";
 interface Props {
   kind: InstructionKind;
   onContinue: () => void;
-  /** When auto-mode is active (subsequent walls), the modal shows a
-   *  shorter copy that omits the "set reference" step. */
+  /** Wall 2+: reference step was skipped; polygon uses stored corner height. */
   autoMode?: boolean;
 }
 
@@ -19,7 +18,6 @@ interface Props {
  * line or polygon). The user taps a single button to dismiss it.
  */
 export default function InstructionModal({ kind, onContinue, autoMode }: Props) {
-  // Disable background scrolling while the modal is open.
   useEffect(() => {
     const prev = document.body.style.overflow;
     document.body.style.overflow = "hidden";
@@ -35,7 +33,7 @@ export default function InstructionModal({ kind, onContinue, autoMode }: Props) 
       <div className="flex-1 flex flex-col px-5 pt-6 pb-4 overflow-hidden">
         <div className="flex items-center justify-between">
           <span className="text-xs font-semibold uppercase tracking-widest text-blue-200">
-            {isReference ? "Vaihe 2 / 3" : "Vaihe 3 / 3"}
+            {isReference ? "Referenssimitta" : autoMode ? "Rajaus (automaattinen)" : "Rajaus"}
           </span>
           <button
             onClick={onContinue}
@@ -48,37 +46,57 @@ export default function InstructionModal({ kind, onContinue, autoMode }: Props) 
 
         <h2 className="mt-3 text-2xl font-bold text-white leading-tight">
           {isReference
-            ? "Piirrä referenssimitta"
-            : "Rajaa maalattava alue"}
+            ? "Anna yksi tunnettu leveys"
+            : autoMode
+              ? "Rajaa tämän seinän nurkat"
+              : "Rajaa maalattava alue"}
         </h2>
 
-        <p className="mt-1.5 text-sm text-blue-100/90">
-          {isReference
-            ? "Anna sovellukselle yksi tunnettu mitta leveyssuunnassa: mittaa aina vaakasuoraan (esim. oven leveys ~90 cm). Sovellus lukitsee viivan vaakasuoraksi."
-            : "Klikkaa talon nurkat järjestyksessä myötäpäivään: alanurkka → yläkulmat → harja → toinen yläkulma → alanurkka."}
+        <p className="mt-1.5 text-sm text-blue-100/90 leading-relaxed">
+          {isReference ? (
+            <>
+              <strong>Napauta oven tai ikkunan sisään</strong> (tumma alue
+              viivakuvassa) — vaakaviiva syntyy automaattisesti. Syötä sitten
+              aukon leveys metreissä (esim. ovi 0,9 m). Jos tunnistus epäonnistuu,
+              käytä kahta napautusta (alku → loppu).
+            </>
+          ) : autoMode ? (
+            <>
+              Ensimmäisellä seinällä annoit referenssin — sovellus käyttää nyt{" "}
+              <strong>tallennettua nurkkakorkeutta</strong> mittakaavana. Klikkaa
+              vähintään kolme nurkkaa talon ulkoreunalle (aloita mieluiten
+              pystysuoralta sivulta).
+            </>
+          ) : (
+            <>
+              Klikkaa talon <strong>ulkonurkat</strong> missä tahansa järjestyksessä
+              — vähintään kolme pistettä. Sovellus kiinnittyy tunnistettuun reunaan
+              ja valitsee ulomman nurkan (esim. laudan ulkoreuna).
+            </>
+          )}
         </p>
 
-        {/* Animation */}
         <div className="mt-4 flex-1 min-h-0 flex items-center justify-center">
           <div className="w-full max-w-[280px] aspect-square">
-            {isReference ? <ReferenceAnim /> : <PolygonAnim />}
+            {isReference ? <ReferenceAnim /> : <PolygonAnim autoMode={autoMode} />}
           </div>
         </div>
 
-        {/* Tip strip */}
         <div className="mt-3 mb-3 rounded-xl bg-white/10 border border-white/15 px-3 py-2.5 text-xs text-blue-50 flex items-start gap-2">
           <span className="text-base leading-none">💡</span>
           <span>
             {isReference ? (
               <>
-                Vinkki: <strong>Vaakasuora</strong> viiva (oven yläreuna,
-                sokkeli) — älä mittaa pystysuorassa. Viiva lukittuu vaakasuoraan
-                ja pisteet voivat snäpätä tunnistettuun reunaan. Zoomaa sormilla.
+                Viivakuva kuvan alla näyttää tunnistetut reunat.{" "}
+                <strong>Pinch-zoom</strong> tai +/- -napit tarkentavat.{" "}
+                <strong>Aloita alusta</strong> kumoaa valinnan. Viiva pysyy aina
+                vaakasuorana.
               </>
             ) : (
               <>
-                Vinkki: Sovellus <strong>napsauttaa pisteet talon reunoille</strong>{" "}
-                automaattisesti. Vihreä = nurkka, syaani = viiva.
+                <strong>Vihreä</strong> esikatselu = nurkka,{" "}
+                <strong>syaani</strong> = viiva. Voit raahata pisteitä ja zoomata.
+                Kun nurkkia on vähintään kolme, paina <strong>Valmis</strong>.
               </>
             )}
           </span>
@@ -88,9 +106,7 @@ export default function InstructionModal({ kind, onContinue, autoMode }: Props) 
           onClick={onContinue}
           className="w-full py-4 rounded-2xl bg-gradient-to-br from-blue-500 to-blue-600 hover:from-blue-600 hover:to-blue-700 text-white font-semibold text-base shadow-lg shadow-blue-900/40 flex items-center justify-center gap-2"
         >
-          {autoMode && isReference
-            ? "Hyppää suoraan rajaukseen"
-            : "Selvä, jatketaan"}
+          Selvä, jatketaan
           <ChevronRight className="w-5 h-5" />
         </button>
       </div>
@@ -98,15 +114,9 @@ export default function InstructionModal({ kind, onContinue, autoMode }: Props) 
   );
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Inline SVG animations. Both use the same little stylised house and replay
-// every 4 s. Kept deliberately small (~150 lines) so they don't pull in any
-// extra runtime dependency.
-
 function HouseSilhouette() {
   return (
     <>
-      {/* Wall */}
       <rect
         x="40"
         y="80"
@@ -117,14 +127,12 @@ function HouseSilhouette() {
         strokeWidth="1.5"
         rx="2"
       />
-      {/* Roof (gable) */}
       <polygon
         points="40,80 200,80 120,30"
         fill="#1e293b"
         stroke="#3b82f6"
         strokeWidth="1.5"
       />
-      {/* Door */}
       <rect
         x="105"
         y="125"
@@ -135,7 +143,6 @@ function HouseSilhouette() {
         strokeWidth="1"
         rx="1"
       />
-      {/* Windows */}
       <rect
         x="60"
         y="100"
@@ -158,26 +165,46 @@ function HouseSilhouette() {
   );
 }
 
+/** One-tap inside opening → auto horizontal span → enter meters. */
 function ReferenceAnim() {
-  // Reference line is drawn across the door (~30px wide, labelled "0,9 m").
-  // Two animated dots mark the start/end, then the line grows between them.
   return (
     <svg
       viewBox="0 0 240 200"
       className="w-full h-full"
       role="img"
-      aria-label="Animaatio referenssimitan piirtämisestä oven leveydeltä"
+      aria-label="Animaatio: napauta aukon sisään, viiva syntyy automaattisesti"
     >
       <HouseSilhouette />
 
-      {/* Animated reference line (door width = 30px = 0.9 m) */}
+      {/* MLSD-style line overlay hint */}
+      <line x1="40" y1="80" x2="200" y2="80" stroke="#94a3b8" strokeWidth="1" opacity="0.5" />
+      <line x1="40" y1="180" x2="200" y2="180" stroke="#94a3b8" strokeWidth="1" opacity="0.5" />
+      <line x1="40" y1="80" x2="40" y2="180" stroke="#94a3b8" strokeWidth="1" opacity="0.5" />
+      <line x1="200" y1="80" x2="200" y2="180" stroke="#94a3b8" strokeWidth="1" opacity="0.5" />
+
       <g style={{ animation: "pulse-soft 4s ease-in-out infinite" }}>
+        {/* Blue translucent opening band */}
+        <rect
+          x="105"
+          y="108"
+          width="30"
+          height="44"
+          fill="rgba(59, 130, 246, 0.28)"
+          rx="2"
+          style={{
+            opacity: 0,
+            animation: "fade-label 4s ease-out infinite both",
+            animationDelay: "1.2s",
+          }}
+        />
+
+        {/* Auto reference line across door */}
         <line
           x1="105"
-          y1="118"
+          y1="130"
           x2="135"
-          y2="118"
-          stroke="#fbbf24"
+          y2="130"
+          stroke="#2563eb"
           strokeWidth="3"
           strokeLinecap="round"
           strokeDasharray="40"
@@ -185,101 +212,63 @@ function ReferenceAnim() {
           style={{
             ["--len" as unknown as keyof React.CSSProperties]: "40",
             animation: "draw-line 4s ease-in-out infinite both",
+            animationDelay: "0.9s",
           } as React.CSSProperties}
         />
-        {/* Endpoints */}
+
+        {/* Tap indicator inside door */}
         <circle
-          cx="105"
-          cy="118"
-          r="5"
-          fill="#fbbf24"
+          cx="120"
+          cy="145"
+          r="7"
+          fill="#2563eb"
           stroke="white"
           strokeWidth="2"
           style={{
-            transformOrigin: "105px 118px",
-            animation: "pop-dot 4s ease-out infinite both",
+            transformOrigin: "120px 145px",
+            animation: "tap-pulse 4s ease-out infinite both",
           }}
         />
-        <circle
-          cx="135"
-          cy="118"
-          r="5"
-          fill="#fbbf24"
-          stroke="white"
-          strokeWidth="2"
-          style={{
-            transformOrigin: "135px 118px",
-            animation: "pop-dot 4s ease-out infinite both",
-            animationDelay: "0.6s",
-          }}
-        />
-        {/* Label */}
-        <g
-          style={{
-            animation: "fade-label 4s ease-out infinite both",
-          }}
-        >
-          <rect
-            x="98"
-            y="98"
-            width="44"
-            height="16"
-            rx="4"
-            fill="white"
-            stroke="#fbbf24"
-            strokeWidth="1.5"
-          />
-          <text
-            x="120"
-            y="110"
-            textAnchor="middle"
-            fontSize="11"
-            fontWeight="700"
-            fill="#b45309"
-          >
+
+        {/* Endpoint ticks */}
+        <line x1="105" y1="122" x2="105" y2="138" stroke="#2563eb" strokeWidth="2" strokeLinecap="round"
+          style={{ opacity: 0, animation: "fade-label 4s ease-out infinite both", animationDelay: "1.1s" }} />
+        <line x1="135" y1="122" x2="135" y2="138" stroke="#2563eb" strokeWidth="2" strokeLinecap="round"
+          style={{ opacity: 0, animation: "fade-label 4s ease-out infinite both", animationDelay: "1.1s" }} />
+
+        <g style={{ animation: "fade-label 4s ease-out infinite both", animationDelay: "1.6s" }}>
+          <rect x="98" y="98" width="44" height="16" rx="4" fill="white" stroke="#2563eb" strokeWidth="1.5" />
+          <text x="120" y="110" textAnchor="middle" fontSize="11" fontWeight="700" fill="#1d4ed8">
             0,9 m
           </text>
         </g>
       </g>
 
-      {/* Caption */}
-      <text
-        x="120"
-        y="195"
-        textAnchor="middle"
-        fontSize="10"
-        fill="#cbd5e1"
-        fontWeight="500"
-      >
-        Esim. oven leveys = 0,9 m
+      <text x="120" y="195" textAnchor="middle" fontSize="10" fill="#cbd5e1" fontWeight="500">
+        Napauta aukon sisään → syötä leveys
       </text>
     </svg>
   );
 }
 
-function PolygonAnim() {
-  // Five points placed in sequence (clockwise, with ridge) at:
-  //   1 (40,180)  2 (40,80)  3 (120,30)  4 (200,80)  5 (200,180)
-  // Each appears with a small delay; the polygon line follows.
+function PolygonAnim({ autoMode }: { autoMode?: boolean }) {
   const pts: [number, number][] = [
     [40, 180],
     [40, 80],
-    [120, 30],
     [200, 80],
     [200, 180],
   ];
-  const pathPoints = pts.map(([x, y]) => `${x},${y}`).join(" ");
+  const pathPoints = `${pts.map(([x, y]) => `${x},${y}`).join(" ")} ${pts[0][0]},${pts[0][1]}`;
 
   return (
     <svg
       viewBox="0 0 240 200"
       className="w-full h-full"
       role="img"
-      aria-label="Animaatio talon rajauksesta klikkaamalla nurkat"
+      aria-label="Animaatio: klikkaa talon nurkat vapaassa järjestyksessä"
     >
       <HouseSilhouette />
 
-      {/* Polygon line — drawn after the dots */}
       <polygon
         points={pathPoints}
         fill="rgba(34, 197, 94, 0.15)"
@@ -291,11 +280,10 @@ function PolygonAnim() {
         style={{
           ["--len" as unknown as keyof React.CSSProperties]: "500",
           animation: "draw-line 4s ease-in-out infinite both",
-          animationDelay: "0.5s",
+          animationDelay: "1.2s",
         } as React.CSSProperties}
       />
 
-      {/* Dots — each pops in sequence */}
       {pts.map(([x, y], i) => (
         <circle
           key={i}
@@ -308,40 +296,19 @@ function PolygonAnim() {
           style={{
             transformOrigin: `${x}px ${y}px`,
             animation: "pop-dot 4s ease-out infinite both",
-            animationDelay: `${i * 0.5}s`,
+            animationDelay: `${[0, 0.7, 1.4, 0.35][i]}s`,
           }}
         />
       ))}
 
-      {/* Index labels */}
-      {pts.map(([x, y], i) => (
-        <text
-          key={`l-${i}`}
-          x={x}
-          y={y + 2}
-          textAnchor="middle"
-          fontSize="9"
-          fontWeight="700"
-          fill="white"
-          style={{
-            animation: "pop-dot 4s ease-out infinite both",
-            animationDelay: `${i * 0.5}s`,
-          }}
-        >
-          {i + 1}
-        </text>
-      ))}
+      {/* Snap guide lines to outer corners */}
+      <line x1="40" y1="80" x2="40" y2="180" stroke="rgba(34,211,238,0.6)" strokeWidth="1.5" strokeDasharray="4 3"
+        style={{ opacity: 0, animation: "fade-label 4s ease-out infinite both", animationDelay: "0.5s" }} />
+      <line x1="200" y1="80" x2="200" y2="180" stroke="rgba(34,211,238,0.6)" strokeWidth="1.5" strokeDasharray="4 3"
+        style={{ opacity: 0, animation: "fade-label 4s ease-out infinite both", animationDelay: "0.9s" }} />
 
-      {/* Caption */}
-      <text
-        x="120"
-        y="195"
-        textAnchor="middle"
-        fontSize="10"
-        fill="#cbd5e1"
-        fontWeight="500"
-      >
-        Klikkaa nurkat 1 → 5
+      <text x="120" y="195" textAnchor="middle" fontSize="10" fill="#cbd5e1" fontWeight="500">
+        {autoMode ? "≥ 3 nurkkaa — automaattinen mittakaava" : "≥ 3 nurkkaa — mikä tahansa järjestys"}
       </text>
     </svg>
   );

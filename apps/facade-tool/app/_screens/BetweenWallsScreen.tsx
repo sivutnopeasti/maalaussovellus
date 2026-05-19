@@ -91,11 +91,11 @@ export default function BetweenWallsScreen({
           <div className="mt-3 flex items-start gap-2 px-3 py-2 rounded-xl bg-emerald-100/60 border border-emerald-200 text-xs text-emerald-800">
             <Sparkles className="w-4 h-4 shrink-0 mt-0.5 text-emerald-600" />
             <span>
-              Seuraava kuva mittaa automaattisesti — nurkkakorkeus{" "}
+              Seuraava kuva: <strong>ei referenssimittaa</strong> — nurkkakorkeus{" "}
               <strong className="font-mono">
                 {storedWallHeightM.toFixed(2)} m
               </strong>{" "}
-              on tallessa.
+              lasketaan automaattisesti polygonin pystyreunasta.
             </span>
           </div>
         ) : (

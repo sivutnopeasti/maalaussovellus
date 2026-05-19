@@ -89,6 +89,23 @@ body {
     opacity: 1;
   }
 }
+@keyframes tap-pulse {
+  0%,
+  5% {
+    opacity: 0;
+    transform: scale(0.4);
+  }
+  20%,
+  35% {
+    opacity: 1;
+    transform: scale(1.15);
+  }
+  50%,
+  100% {
+    opacity: 0.85;
+    transform: scale(1);
+  }
+}
 @keyframes pulse-soft {
   0%,
   100% {

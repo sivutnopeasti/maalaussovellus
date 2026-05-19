@@ -25,7 +25,7 @@ export default function AnalysingScreen({
       <div className="text-center space-y-1">
         <p className="text-lg font-semibold">{message}</p>
         <p className="text-sm text-blue-200/80">
-          Tämä vie pari sekuntia. Älä sulje ikkunaa.
+          Lasketaan pinta-alaa ja tarkistetaan mittakaava. Älä sulje ikkunaa.
         </p>
       </div>
     </div>

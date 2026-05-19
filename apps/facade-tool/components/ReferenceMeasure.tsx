@@ -652,21 +652,21 @@ export default function ReferenceMeasure({
         <Ruler className="w-4 h-4 text-blue-600 shrink-0" />
         {phase === "point1" && (
           <span className="text-blue-700 font-medium">
-            <strong>Yksi napautus</strong> oven tai ikkunan{" "}
-            <strong>sisään</strong> (tummalle alueelle viivakuvassa). Viiva
-            syntyy automaattisesti aukon leveyteen — napauta likimain keskelle.
-            Jos tunnistus epäonnistuu, käytä kahta napautusta (alku → loppu).
+            <strong>Napauta aukon sisään</strong> (tumma alue viivakuvassa
+            alla). Vaakaviiva syntyy automaattisesti. Tarvittaessa{" "}
+            <strong>Aloita alusta</strong> vasemmassa yläkulmassa. Jos
+            tunnistus epäonnistuu: kaksi napautusta (alku → loppu).
           </span>
         )}
         {phase === "point2" && (
           <span className="text-blue-700 font-medium">
-            Aseta <strong>loppupiste</strong> samaan korkeuteen — viiva pysyy
-            automaattisesti vaakasuorana. Raahaa tarvittaessa.
+            Aseta <strong>loppupiste</strong> — viiva pysyy vaakasuorana.
+            Raahaa pisteitä tarkentaaksesi. Zoomaa +/- -napeilla.
           </span>
         )}
         {phase === "input" && (
           <span className="text-green-700 font-medium">
-            Syötä viivan pituus metreissä.
+            Syötä aukon leveys metreissä (esim. ovi 0,9).
           </span>
         )}
       </div>
@@ -731,7 +731,7 @@ export default function ReferenceMeasure({
               className="max-h-full max-w-full w-full object-contain"
             />
             <span className="pointer-events-none absolute bottom-1 left-2 text-[10px] font-medium text-white/90 bg-slate-900/70 px-1.5 py-0.5 rounded">
-              MLSD-viivat (väliaikainen)
+              Reunaviivat — napauta tummaa aukkoa
             </span>
           </div>
         )}

@@ -855,18 +855,21 @@ export default function PolygonSelect({
             {points.length === 0 && (
               <>
                 Klikkaa <strong>1. nurkka</strong>
-                {usingAutoScale && ", aloita pystysuoralta sivulta"}.
+                {usingAutoScale
+                  ? " (pystysuoralta sivulta — automaattinen mittakaava)"
+                  : " — vihreä = nurkka, syaani = viiva"}
+                .
               </>
             )}
             {points.length > 0 && points.length < 3 && (
               <>
-                {points.length} pistettä — lisää{" "}
-                <strong>{3 - points.length} lisää</strong>.
+                {points.length} nurkkaa — lisää vielä{" "}
+                <strong>{3 - points.length}</strong>. Raahaa pisteitä tarvittaessa.
               </>
             )}
             {points.length >= 3 && (
               <span className="text-green-700 font-medium">
-                {points.length} pistettä — paina <strong>Valmis</strong>.
+                {points.length} nurkkaa — paina <strong>Valmis</strong>.
               </span>
             )}
           </span>
