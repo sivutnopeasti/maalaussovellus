@@ -12,10 +12,14 @@ import {
   snapToNearestLine,
   type LineMapData,
 } from "@/lib/lineSnap";
+import ZoomControls from "./ZoomControls";
 
 /** Temporary: show MLSD raster under the photo on the reference step. */
 const SHOW_MLSD_UNDER_REFERENCE = true;
-import ZoomControls from "./ZoomControls";
+
+/** Canvas strokes aligned with app CTAs (blue-600 / blue-700). */
+const BRAND_BLUE = "#2563eb";
+const BRAND_BLUE_ACTIVE = "#1d4ed8";
 
 interface Props {
   imageDataUrl: string;
@@ -204,14 +208,50 @@ export default function ReferenceMeasure({
     const sx = (p: Point) => p.x * scale;
     const sy = (p: Point) => p.y * scale;
 
-    // Connecting line between the two endpoints.
+    // Translucent “opening” band + outer glow between the two endpoints.
     if (points.length >= 2) {
-      ctx.strokeStyle = "#EF4444";
-      ctx.lineWidth = viewport.strokeWidth(2);
+      const p0 = points[0];
+      const p1 = points[1];
+      const xL = Math.min(sx(p0), sx(p1));
+      const xR = Math.max(sx(p0), sx(p1));
+      const yM = (sy(p0) + sy(p1)) / 2;
+      const span = Math.max(xR - xL, viewport.strokeWidth(6));
+      const bandHalf = Math.max(
+        viewport.dotRadius(36),
+        Math.min(srcW, srcH) * scale * 0.045,
+      );
+      const rr = viewport.strokeWidth(10);
+
+      ctx.save();
+      ctx.shadowBlur = viewport.strokeWidth(26);
+      ctx.shadowColor = "rgba(37, 99, 235, 0.5)";
+      ctx.fillStyle = "rgba(59, 130, 246, 0.24)";
+      ctx.beginPath();
+      ctx.roundRect(xL, yM - bandHalf, span, bandHalf * 2, rr);
+      ctx.fill();
+
+      ctx.shadowBlur = viewport.strokeWidth(14);
+      ctx.shadowColor = "rgba(147, 197, 253, 0.42)";
+      ctx.fillStyle = "rgba(96, 165, 250, 0.16)";
+      ctx.beginPath();
+      ctx.roundRect(xL, yM - bandHalf, span, bandHalf * 2, rr);
+      ctx.fill();
+      ctx.restore();
+    }
+
+    // Connecting line between the two endpoints — brand blue + soft glow.
+    if (points.length >= 2) {
+      ctx.save();
+      ctx.strokeStyle = BRAND_BLUE;
+      ctx.lineWidth = viewport.strokeWidth(3);
+      ctx.lineCap = "round";
+      ctx.shadowBlur = viewport.strokeWidth(10);
+      ctx.shadowColor = "rgba(37, 99, 235, 0.45)";
       ctx.beginPath();
       ctx.moveTo(sx(points[0]), sy(points[0]));
       ctx.lineTo(sx(points[1]), sy(points[1]));
       ctx.stroke();
+      ctx.restore();
     }
 
     // Endpoint markers — thin vertical tick lines instead of dots.
@@ -237,8 +277,8 @@ export default function ReferenceMeasure({
       ctx.lineTo(cx, cy + halfLen);
       ctx.stroke();
 
-      // Red tick on top.
-      ctx.strokeStyle = active ? "#DC2626" : "#EF4444";
+      // Brand-coloured tick on top.
+      ctx.strokeStyle = active ? BRAND_BLUE_ACTIVE : BRAND_BLUE;
       ctx.lineWidth = tickWidth;
       ctx.beginPath();
       ctx.moveTo(cx, cy - halfLen);
@@ -252,7 +292,7 @@ export default function ReferenceMeasure({
       ctx.fillStyle = "#FFFFFF";
       ctx.fill();
       ctx.lineWidth = viewport.strokeWidth(1.5);
-      ctx.strokeStyle = active ? "#DC2626" : "#EF4444";
+      ctx.strokeStyle = active ? BRAND_BLUE_ACTIVE : BRAND_BLUE;
       ctx.stroke();
 
       ctx.lineCap = "butt";
@@ -281,7 +321,7 @@ export default function ReferenceMeasure({
         height: 110,
         borderRadius: 18,
         magnification: 1.7,
-        accent: "#EF4444",
+        accent: BRAND_BLUE,
       });
       ctx.restore();
       viewport.applyTransform(ctx);
@@ -318,7 +358,17 @@ export default function ReferenceMeasure({
       ctx.fillText(label, mx, my);
       ctx.restore();
     }
-  }, [points, canvasSize, scale, meters, viewport, draggingIdx, hoverIdx]);
+  }, [
+    points,
+    canvasSize,
+    scale,
+    meters,
+    viewport,
+    draggingIdx,
+    hoverIdx,
+    srcW,
+    srcH,
+  ]);
 
   useEffect(() => {
     redraw();
@@ -666,6 +716,16 @@ export default function ReferenceMeasure({
               reset={viewport.reset}
             />
           )}
+          {points.length >= 1 && (
+            <button
+              type="button"
+              onClick={reset}
+              className="absolute top-2 left-2 z-30 flex items-center gap-1.5 px-3 py-2 rounded-xl bg-white/95 text-blue-800 border border-blue-200 shadow-lg text-xs font-semibold hover:bg-blue-50 active:scale-[0.98] transition-transform"
+            >
+              <RotateCcw className="w-4 h-4 shrink-0" aria-hidden />
+              Aloita alusta
+            </button>
+          )}
         </div>
 
         {SHOW_MLSD_UNDER_REFERENCE && mlsdMapUrl && (
@@ -710,15 +770,6 @@ export default function ReferenceMeasure({
         </div>
       )}
 
-      {points.length > 0 && phase !== "input" && (
-        <button
-          onClick={reset}
-          className="self-start flex items-center gap-1 px-3 py-1.5 text-slate-500 hover:text-slate-700 text-xs"
-        >
-          <RotateCcw className="w-3.5 h-3.5" />
-          Aloita alusta
-        </button>
-      )}
     </div>
   );
 }
