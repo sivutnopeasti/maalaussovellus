@@ -208,35 +208,34 @@ export default function ReferenceMeasure({
     const sx = (p: Point) => p.x * scale;
     const sy = (p: Point) => p.y * scale;
 
-    // Translucent “opening” band + outer glow between the two endpoints.
+    // Translucent fill strictly inside the tick + horizontal line bounds.
     if (points.length >= 2) {
       const p0 = points[0];
       const p1 = points[1];
-      const xL = Math.min(sx(p0), sx(p1));
-      const xR = Math.max(sx(p0), sx(p1));
+      const x0 = sx(p0);
+      const x1 = sx(p1);
       const yM = (sy(p0) + sy(p1)) / 2;
-      const span = Math.max(xR - xL, viewport.strokeWidth(6));
-      const bandHalf = Math.max(
-        viewport.dotRadius(36),
-        Math.min(srcW, srcH) * scale * 0.045,
-      );
-      const rr = viewport.strokeWidth(10);
+      const halfLen = viewport.dotRadius(14);
+      const inset = viewport.strokeWidth(1.5);
+      const left = Math.min(x0, x1) + inset;
+      const top = yM - halfLen + inset;
+      const width = Math.max(0, Math.abs(x1 - x0) - inset * 2);
+      const height = Math.max(0, halfLen * 2 - inset * 2);
 
-      ctx.save();
-      ctx.shadowBlur = viewport.strokeWidth(26);
-      ctx.shadowColor = "rgba(37, 99, 235, 0.5)";
-      ctx.fillStyle = "rgba(59, 130, 246, 0.24)";
-      ctx.beginPath();
-      ctx.roundRect(xL, yM - bandHalf, span, bandHalf * 2, rr);
-      ctx.fill();
+      if (width > 0 && height > 0) {
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(left, top, width, height);
+        ctx.clip();
 
-      ctx.shadowBlur = viewport.strokeWidth(14);
-      ctx.shadowColor = "rgba(147, 197, 253, 0.42)";
-      ctx.fillStyle = "rgba(96, 165, 250, 0.16)";
-      ctx.beginPath();
-      ctx.roundRect(xL, yM - bandHalf, span, bandHalf * 2, rr);
-      ctx.fill();
-      ctx.restore();
+        const grad = ctx.createLinearGradient(0, top, 0, top + height);
+        grad.addColorStop(0, "rgba(59, 130, 246, 0.14)");
+        grad.addColorStop(0.5, "rgba(96, 165, 250, 0.34)");
+        grad.addColorStop(1, "rgba(59, 130, 246, 0.14)");
+        ctx.fillStyle = grad;
+        ctx.fillRect(left, top, width, height);
+        ctx.restore();
+      }
     }
 
     // Connecting line between the two endpoints — brand blue + soft glow.
@@ -358,17 +357,7 @@ export default function ReferenceMeasure({
       ctx.fillText(label, mx, my);
       ctx.restore();
     }
-  }, [
-    points,
-    canvasSize,
-    scale,
-    meters,
-    viewport,
-    draggingIdx,
-    hoverIdx,
-    srcW,
-    srcH,
-  ]);
+  }, [points, canvasSize, scale, meters, viewport, draggingIdx, hoverIdx]);
 
   useEffect(() => {
     redraw();
