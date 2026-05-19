@@ -208,32 +208,36 @@ export default function ReferenceMeasure({
     const sx = (p: Point) => p.x * scale;
     const sy = (p: Point) => p.y * scale;
 
-    // Translucent fill strictly inside the tick + horizontal line bounds.
+    // Translucent fill in image space — spans the opening quadrilateral
+    // between the two endpoints and scales correctly when zooming in.
     if (points.length >= 2) {
       const p0 = points[0];
       const p1 = points[1];
-      const x0 = sx(p0);
-      const x1 = sx(p1);
-      const yM = (sy(p0) + sy(p1)) / 2;
-      const halfLen = viewport.dotRadius(14);
-      const inset = viewport.strokeWidth(1.5);
-      const left = Math.min(x0, x1) + inset;
-      const top = yM - halfLen + inset;
-      const width = Math.max(0, Math.abs(x1 - x0) - inset * 2);
-      const height = Math.max(0, halfLen * 2 - inset * 2);
+      const xL = Math.min(p0.x, p1.x);
+      const xR = Math.max(p0.x, p1.x);
+      const yM = (p0.y + p1.y) / 2;
+      const spanImg = xR - xL;
+      const halfLenImg = Math.max(
+        spanImg * 0.45,
+        Math.min(srcW, srcH) * 0.022,
+      );
+
+      const left = xL * scale;
+      const top = (yM - halfLenImg) * scale;
+      const width = spanImg * scale;
+      const height = 2 * halfLenImg * scale;
 
       if (width > 0 && height > 0) {
         ctx.save();
         ctx.beginPath();
         ctx.rect(left, top, width, height);
-        ctx.clip();
 
         const grad = ctx.createLinearGradient(0, top, 0, top + height);
         grad.addColorStop(0, "rgba(59, 130, 246, 0.14)");
         grad.addColorStop(0.5, "rgba(96, 165, 250, 0.34)");
         grad.addColorStop(1, "rgba(59, 130, 246, 0.14)");
         ctx.fillStyle = grad;
-        ctx.fillRect(left, top, width, height);
+        ctx.fill();
         ctx.restore();
       }
     }
@@ -357,7 +361,7 @@ export default function ReferenceMeasure({
       ctx.fillText(label, mx, my);
       ctx.restore();
     }
-  }, [points, canvasSize, scale, meters, viewport, draggingIdx, hoverIdx]);
+  }, [points, canvasSize, scale, meters, viewport, draggingIdx, hoverIdx, srcW, srcH]);
 
   useEffect(() => {
     redraw();

@@ -238,6 +238,9 @@ export function snapToNearestLine(
   maxRadiusPx: number,
   scaleX = 1,
   scaleY = scaleX,
+  /** Facade interior hint (source-image px). When set, parallel MLSD
+   *  edges are resolved to the outermost line (e.g. cladding outer face). */
+  exteriorHint?: Point,
 ): Point | null {
   const { width: w, height: h, mask } = lineMap;
   const cx = Math.round(point.x * scaleX);
@@ -308,7 +311,21 @@ export function snapToNearestLine(
   }
 
   if (bestX < 0) return null;
-  return { x: bestX / scaleX, y: bestY / scaleY };
+  let outX = bestX;
+  let outY = bestY;
+  if (exteriorHint) {
+    const refined = refineToOutermostEdge(
+      bestX,
+      bestY,
+      lineMap,
+      exteriorHint,
+      scaleX,
+      scaleY,
+    );
+    outX = refined.x;
+    outY = refined.y;
+  }
+  return { x: outX / scaleX, y: outY / scaleY };
 }
 
 /**
@@ -384,6 +401,9 @@ export function snapToNearestCorner(
   maxRadiusPx: number,
   scaleX = 1,
   scaleY = scaleX,
+  /** Facade interior hint (source-image px). Pushes snap to the outermost
+   *  parallel edge at corners (cladding outer face, not inner groove). */
+  exteriorHint?: Point,
 ): Point | null {
   const { width: w, height: h, mask } = lineMap;
   const cx = Math.round(point.x * scaleX);
@@ -393,8 +413,18 @@ export function snapToNearestCorner(
   // Fast path: clicked pixel itself is a corner.
   if (cx >= 1 && cx < w - 1 && cy >= 1 && cy < h - 1) {
     if (mask[cy * w + cx] && isLikelyIntersection(cx, cy, lineMap)) {
-      const refined = refineCornerCentroid(cx, cy, lineMap);
-      return { x: refined.x / scaleX, y: refined.y / scaleY };
+      let outLm = refineCornerCentroid(cx, cy, lineMap);
+      if (exteriorHint) {
+        outLm = refineToOutermostEdge(
+          outLm.x,
+          outLm.y,
+          lineMap,
+          exteriorHint,
+          scaleX,
+          scaleY,
+        );
+      }
+      return { x: outLm.x / scaleX, y: outLm.y / scaleY };
     }
   }
 
@@ -439,14 +469,177 @@ export function snapToNearestCorner(
   }
 
   if (bestX < 0) return null;
-  // Refine: snap to the centroid of the connected cluster of corner
-  // pixels near (bestX, bestY). MLSD lines are typically 2-3 px wide
-  // because of anti-aliasing, so the first corner pixel we hit on the
-  // expanding shell is usually on the *edge* of the corner blob, not
-  // its geometric centre. Looking at all corner-classified neighbours
-  // within a small window pulls the snap toward the true intersection.
-  const refined = refineCornerCentroid(bestX, bestY, lineMap);
-  return { x: refined.x / scaleX, y: refined.y / scaleY };
+  let outLm = refineCornerCentroid(bestX, bestY, lineMap);
+  if (exteriorHint) {
+    outLm = refineToOutermostEdge(
+      outLm.x,
+      outLm.y,
+      lineMap,
+      exteriorHint,
+      scaleX,
+      scaleY,
+    );
+  }
+  return { x: outLm.x / scaleX, y: outLm.y / scaleY };
+}
+
+/**
+ * Find local maxima in column- or row-density around a snap candidate.
+ * Used to detect parallel MLSD edges (outer cladding vs inner groove).
+ */
+function findStripPeaks(
+  lineMap: LineMapData,
+  lmX: number,
+  lmY: number,
+  axis: "column" | "row",
+): number[] {
+  const { width: wm, height: hm, mask } = lineMap;
+  const win = Math.max(10, Math.round(Math.min(wm, hm) * 0.04));
+  const cx = Math.round(lmX);
+  const cy = Math.round(lmY);
+
+  if (axis === "column") {
+    const x0 = Math.max(1, cx - win);
+    const x1 = Math.min(wm - 2, cx + win);
+    const y0 = Math.max(1, cy - win);
+    const y1 = Math.min(hm - 2, cy + win);
+    const stripH = y1 - y0 + 1;
+
+    const colSum = new Float64Array(wm);
+    for (let x = x0; x <= x1; x++) {
+      let s = 0;
+      for (let y = y0; y <= y1; y++) s += mask[y * wm + x];
+      colSum[x] = s;
+    }
+
+    const blurred = new Float64Array(wm);
+    for (let x = x0; x <= x1; x++) {
+      let acc = 0;
+      let n = 0;
+      for (let dx = -2; dx <= 2; dx++) {
+        const xx = x + dx;
+        if (xx >= x0 && xx <= x1) {
+          acc += colSum[xx];
+          n++;
+        }
+      }
+      blurred[x] = n > 0 ? acc / n : 0;
+    }
+
+    let maxVal = 0;
+    for (let x = x0; x <= x1; x++) {
+      if (blurred[x] > maxVal) maxVal = blurred[x];
+    }
+    const minPeak = Math.max(maxVal * 0.28, stripH * 0.12);
+
+    const rough: number[] = [];
+    for (let x = x0 + 2; x <= x1 - 2; x++) {
+      const v = blurred[x];
+      if (v < minPeak) continue;
+      let isMax = true;
+      for (let dx = -2; dx <= 2; dx++) {
+        if (dx === 0) continue;
+        if (blurred[x + dx] > v + 1e-6) {
+          isMax = false;
+          break;
+        }
+      }
+      if (isMax) rough.push(x);
+    }
+    return mergePeakColumns(rough, blurred, 6);
+  }
+
+  const x0 = Math.max(1, cx - win);
+  const x1 = Math.min(wm - 2, cx + win);
+  const y0 = Math.max(1, cy - win);
+  const y1 = Math.min(hm - 2, cy + win);
+  const stripW = x1 - x0 + 1;
+
+  const rowSum = new Float64Array(hm);
+  for (let y = y0; y <= y1; y++) {
+    let s = 0;
+    for (let x = x0; x <= x1; x++) s += mask[y * wm + x];
+    rowSum[y] = s;
+  }
+
+  const blurred = new Float64Array(hm);
+  for (let y = y0; y <= y1; y++) {
+    let acc = 0;
+    let n = 0;
+    for (let dy = -2; dy <= 2; dy++) {
+      const yy = y + dy;
+      if (yy >= y0 && yy <= y1) {
+        acc += rowSum[yy];
+        n++;
+      }
+    }
+    blurred[y] = n > 0 ? acc / n : 0;
+  }
+
+  let maxVal = 0;
+  for (let y = y0; y <= y1; y++) {
+    if (blurred[y] > maxVal) maxVal = blurred[y];
+  }
+  const minPeak = Math.max(maxVal * 0.28, stripW * 0.12);
+
+  const rough: number[] = [];
+  for (let y = y0 + 2; y <= y1 - 2; y++) {
+    const v = blurred[y];
+    if (v < minPeak) continue;
+    let isMax = true;
+    for (let dy = -2; dy <= 2; dy++) {
+      if (dy === 0) continue;
+      if (blurred[y + dy] > v + 1e-6) {
+        isMax = false;
+        break;
+      }
+    }
+    if (isMax) rough.push(y);
+  }
+  return mergePeakColumns(rough, blurred, 6);
+}
+
+/** Pick the parallel edge peak farthest from the facade interior hint. */
+function pickOutermostPeak(
+  peaks: number[],
+  hintLm: number,
+  fallback: number,
+): number {
+  if (peaks.length === 0) return fallback;
+  if (peaks.length === 1) return peaks[0];
+  let best = peaks[0];
+  let bestDist = Math.abs(peaks[0] - hintLm);
+  for (let i = 1; i < peaks.length; i++) {
+    const d = Math.abs(peaks[i] - hintLm);
+    if (d > bestDist) {
+      bestDist = d;
+      best = peaks[i];
+    }
+  }
+  return best;
+}
+
+/**
+ * When MLSD draws parallel edges (cladding outer face + inner groove),
+ * push the snap to the line farthest from `exteriorHint` — the building
+ * envelope corner, not the inner board edge.
+ */
+export function refineToOutermostEdge(
+  lmX: number,
+  lmY: number,
+  lineMap: LineMapData,
+  exteriorHint: Point,
+  scaleX: number,
+  scaleY: number,
+): { x: number; y: number } {
+  const hintX = exteriorHint.x * scaleX;
+  const hintY = exteriorHint.y * scaleY;
+  const colPeaks = findStripPeaks(lineMap, lmX, lmY, "column");
+  const rowPeaks = findStripPeaks(lineMap, lmX, lmY, "row");
+  return {
+    x: pickOutermostPeak(colPeaks, hintX, lmX),
+    y: pickOutermostPeak(rowPeaks, hintY, lmY),
+  };
 }
 
 /**

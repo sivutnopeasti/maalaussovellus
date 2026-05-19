@@ -529,6 +529,7 @@ export default function PolygonSelect({
   const resolveSnap = useCallback(
     (
       raw: Point,
+      existingPoints: Point[] = points,
     ): {
       snapped: Point | null;
       distPx: number | null;
@@ -545,6 +546,20 @@ export default function PolygonSelect({
       const lmScaleX = lm.width / imageWidth;
       const lmScaleY = lm.height / imageHeight;
 
+      // Interior hint: centroid of placed vertices → outermost parallel edge
+      // is the one farthest from the polygon interior.
+      const exteriorHint: Point =
+        existingPoints.length > 0
+          ? {
+              x:
+                existingPoints.reduce((s, p) => s + p.x, 0) /
+                existingPoints.length,
+              y:
+                existingPoints.reduce((s, p) => s + p.y, 0) /
+                existingPoints.length,
+            }
+          : { x: imageWidth * 0.5, y: imageHeight * 0.5 };
+
       // Stage 1 — corner (wide net so off-target taps still snap home)
       const corner = snapToNearestCorner(
         raw,
@@ -552,6 +567,7 @@ export default function PolygonSelect({
         cornerRadius,
         lmScaleX,
         lmScaleY,
+        exteriorHint,
       );
       if (corner) {
         return {
@@ -563,7 +579,14 @@ export default function PolygonSelect({
       }
 
       // Stage 2 — generic line pixel (tighter)
-      const line = snapToNearestLine(raw, lm, lineRadius, lmScaleX, lmScaleY);
+      const line = snapToNearestLine(
+        raw,
+        lm,
+        lineRadius,
+        lmScaleX,
+        lmScaleY,
+        exteriorHint,
+      );
       if (line) {
         return {
           snapped: line,
@@ -575,7 +598,7 @@ export default function PolygonSelect({
 
       return { snapped: null, distPx: null, radius: cornerRadius, kind: null };
     },
-    [imageWidth, imageHeight],
+    [imageWidth, imageHeight, points],
   );
 
   /** Convert any event with clientX/clientY (Mouse, Pointer or Touch
