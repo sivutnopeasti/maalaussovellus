@@ -565,3 +565,128 @@ export function inferOpeningWidthFromMlsd(
     right: { x: rightX, y: yImg },
   };
 }
+
+/** First pixel with mask===0 within Chebyshev shells around (sx,sy). */
+function nearestInteriorPixel(
+  sx: number,
+  sy: number,
+  mask: Uint8Array,
+  w: number,
+  h: number,
+  maxRadius: number,
+): { x: number; y: number } | null {
+  for (let r = 0; r <= maxRadius; r++) {
+    for (let dy = -r; dy <= r; dy++) {
+      for (let dx = -r; dx <= r; dx++) {
+        if (Math.max(Math.abs(dx), Math.abs(dy)) !== r) continue;
+        const x = sx + dx;
+        const y = sy + dy;
+        if (x >= 0 && x < w && y >= 0 && y < h && mask[y * w + x] === 0) {
+          return { x, y };
+        }
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * User taps once inside a dark (non-line) opening in the MLSD map (window/door
+ * interior). We flood-fill through mask==0 pixels within a Chebyshev radius of
+ * that interior seed so the region does not leak across the whole facade, take
+ * the axis-aligned bounding box, and return a horizontal segment across its
+ * width at mid-height.
+ *
+ * Falls back callers should try `inferOpeningWidthFromMlsd` if this returns null.
+ */
+export function inferOpeningFromInteriorClick(
+  click: Point,
+  lineMap: LineMapData,
+  imageWidth: number,
+  imageHeight: number,
+): { left: Point; right: Point } | null {
+  if (imageWidth <= 0 || imageHeight <= 0) return null;
+
+  const scaleX = lineMap.width / imageWidth;
+  const scaleY = lineMap.height / imageHeight;
+  let lx = Math.round(click.x * scaleX);
+  let ly = Math.round(click.y * scaleY);
+  const { width: wm, height: hm, mask } = lineMap;
+
+  lx = Math.max(0, Math.min(wm - 1, lx));
+  ly = Math.max(0, Math.min(hm - 1, ly));
+
+  const interior = nearestInteriorPixel(lx, ly, mask, wm, hm, 120);
+  if (!interior) return null;
+  lx = interior.x;
+  ly = interior.y;
+
+  const R = Math.round(Math.min(wm, hm) * 0.46);
+  const minCells = 45;
+  const maxCells = Math.round(wm * hm * 0.12);
+
+  let minX = lx;
+  let maxX = lx;
+  let minY = ly;
+  let maxY = ly;
+  const visited = new Uint8Array(wm * hm);
+  const qx: number[] = [lx];
+  const qy: number[] = [ly];
+  visited[ly * wm + lx] = 1;
+  let head = 0;
+  let count = 0;
+
+  while (head < qx.length && count < maxCells) {
+    const x = qx[head];
+    const y = qy[head++];
+    count++;
+    if (x < minX) minX = x;
+    if (x > maxX) maxX = x;
+    if (y < minY) minY = y;
+    if (y > maxY) maxY = y;
+
+    const dirs = [
+      [1, 0],
+      [-1, 0],
+      [0, 1],
+      [0, -1],
+    ];
+    for (const [dx, dy] of dirs) {
+      const nx = x + dx;
+      const ny = y + dy;
+      if (nx < 0 || nx >= wm || ny < 0 || ny >= hm) continue;
+      if (visited[ny * wm + nx]) continue;
+      if (mask[ny * wm + nx] !== 0) continue;
+      if (Math.max(Math.abs(nx - lx), Math.abs(ny - ly)) > R) continue;
+      visited[ny * wm + nx] = 1;
+      qx.push(nx);
+      qy.push(ny);
+    }
+  }
+
+  if (count >= maxCells) return null;
+  if (count < minCells) return null;
+
+  const wLm = maxX - minX + 1;
+  const hLm = maxY - minY + 1;
+  if (wLm < 10 || hLm < 12) return null;
+  if (wLm > wm * 0.78 || hLm > hm * 0.78) return null;
+
+  const yMidLm = (minY + maxY) * 0.5;
+  const yImg = Math.max(
+    0,
+    Math.min(imageHeight - 1, yMidLm / scaleY),
+  );
+  let leftX = minX / scaleX;
+  let rightX = maxX / scaleX;
+  leftX = Math.max(0, Math.min(imageWidth - 1, leftX));
+  rightX = Math.max(0, Math.min(imageWidth - 1, rightX));
+
+  const minSepImg = 6 / Math.min(scaleX, scaleY);
+  if (rightX <= leftX + minSepImg) return null;
+
+  return {
+    left: { x: leftX, y: yImg },
+    right: { x: rightX, y: yImg },
+  };
+}

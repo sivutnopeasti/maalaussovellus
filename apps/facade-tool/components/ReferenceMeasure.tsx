@@ -7,10 +7,14 @@ import { useCanvasViewport } from "@/lib/useCanvasViewport";
 import { drawLoupe } from "@/lib/canvasLoupe";
 import {
   buildLineMap,
+  inferOpeningFromInteriorClick,
   inferOpeningWidthFromMlsd,
   snapToNearestLine,
   type LineMapData,
 } from "@/lib/lineSnap";
+
+/** Temporary: show MLSD raster under the photo on the reference step. */
+const SHOW_MLSD_UNDER_REFERENCE = true;
 import ZoomControls from "./ZoomControls";
 
 interface Props {
@@ -516,12 +520,19 @@ export default function ReferenceMeasure({
 
       if (phase === "point1") {
         if (lineMapReady && lineMapRef.current) {
-          const span = inferOpeningWidthFromMlsd(
-            img,
-            lineMapRef.current,
-            srcW,
-            srcH,
-          );
+          const span =
+            inferOpeningFromInteriorClick(
+              img,
+              lineMapRef.current,
+              srcW,
+              srcH,
+            ) ??
+            inferOpeningWidthFromMlsd(
+              img,
+              lineMapRef.current,
+              srcW,
+              srcH,
+            );
           if (span) {
             const left = applyRefPoint(span.left, 0);
             const right = applyRefPoint(span.right, 1, left.y);
@@ -598,10 +609,10 @@ export default function ReferenceMeasure({
         <Ruler className="w-4 h-4 text-blue-600 shrink-0" />
         {phase === "point1" && (
           <span className="text-blue-700 font-medium">
-            <strong>Vaakasuora</strong> referenssi (ovi / ikkuna): napauta{" "}
-            <strong>aukon keskelle</strong> tai reunaviivan lähelle — viiva asettuu
-            automaattisesti MLSD-pielien väliin, kun viivakartta on valmis.
-            Muuten kaksi napautusta kuten ennen (alku → loppu).
+            <strong>Yksi napautus</strong> oven tai ikkunan{" "}
+            <strong>sisään</strong> (tummalle alueelle viivakuvassa). Viiva
+            syntyy automaattisesti aukon leveyteen — napauta likimain keskelle.
+            Jos tunnistus epäonnistuu, käytä kahta napautusta (alku → loppu).
           </span>
         )}
         {phase === "point2" && (
@@ -617,42 +628,59 @@ export default function ReferenceMeasure({
         )}
       </div>
 
-      {/* Canvas wrapper — flex-1 + min-h-0 makes it shrink to fit. */}
-      <div
-        ref={canvasWrapperRef}
-        className="relative flex-1 min-h-0 rounded-xl overflow-hidden border-2 border-slate-200 bg-slate-900 flex items-center justify-center"
-      >
-        {canvasSize.w > 0 && (
-          <canvas
-            ref={canvasRef}
-            width={canvasSize.w}
-            height={canvasSize.h}
-            // Apply viewport props first so we can override the pointer
-            // handlers below with the drag-aware versions.
-            {...viewport.eventProps}
-            onPointerDown={onPointerDown}
-            onPointerMove={onPointerMove}
-            onPointerUp={onPointerUp}
-            onPointerCancel={onPointerCancel}
-            onPointerLeave={onPointerLeave}
-            onTouchStart={onTouchStart}
-            onTouchMove={onTouchMove}
-            onTouchEnd={onTouchEnd}
-            onClick={handleCanvasClick}
-            className={`block select-none ${cursorClass}`}
-            style={{
-              maxWidth: "100%",
-              maxHeight: "100%",
-              touchAction: "none",
-            }}
-          />
-        )}
-        {canvasSize.w > 0 && (
-          <ZoomControls
-            zoom={viewport.zoom}
-            zoomBy={viewport.zoomBy}
-            reset={viewport.reset}
-          />
+      {/* Main canvas + temporary MLSD preview below */}
+      <div className="flex flex-col flex-1 min-h-0 gap-2">
+        <div
+          ref={canvasWrapperRef}
+          className="relative flex-1 min-h-0 rounded-xl overflow-hidden border-2 border-slate-200 bg-slate-900 flex items-center justify-center"
+        >
+          {canvasSize.w > 0 && (
+            <canvas
+              ref={canvasRef}
+              width={canvasSize.w}
+              height={canvasSize.h}
+              // Apply viewport props first so we can override the pointer
+              // handlers below with the drag-aware versions.
+              {...viewport.eventProps}
+              onPointerDown={onPointerDown}
+              onPointerMove={onPointerMove}
+              onPointerUp={onPointerUp}
+              onPointerCancel={onPointerCancel}
+              onPointerLeave={onPointerLeave}
+              onTouchStart={onTouchStart}
+              onTouchMove={onTouchMove}
+              onTouchEnd={onTouchEnd}
+              onClick={handleCanvasClick}
+              className={`block select-none ${cursorClass}`}
+              style={{
+                maxWidth: "100%",
+                maxHeight: "100%",
+                touchAction: "none",
+              }}
+            />
+          )}
+          {canvasSize.w > 0 && (
+            <ZoomControls
+              zoom={viewport.zoom}
+              zoomBy={viewport.zoomBy}
+              reset={viewport.reset}
+            />
+          )}
+        </div>
+
+        {SHOW_MLSD_UNDER_REFERENCE && mlsdMapUrl && (
+          <div className="relative shrink-0 h-[min(26vh,220px)] rounded-xl overflow-hidden border-2 border-dashed border-slate-300 bg-black flex items-center justify-center">
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src={mlsdMapUrl}
+              alt=""
+              crossOrigin="anonymous"
+              className="max-h-full max-w-full w-full object-contain"
+            />
+            <span className="pointer-events-none absolute bottom-1 left-2 text-[10px] font-medium text-white/90 bg-slate-900/70 px-1.5 py-0.5 rounded">
+              MLSD-viivat (väliaikainen)
+            </span>
+          </div>
         )}
       </div>
 
