@@ -457,6 +457,101 @@ function mergePeakColumns(
 }
 
 /**
+ * Within an opening's vertical band, MLSD often draws two parallel vertical
+ * edges (outer frame vs inner glazing bar). On each side of the opening
+ * midline we take the two strongest column peaks and average their positions —
+ * i.e. midpoint between outer and inner jamb.
+ */
+function refineOpeningBBoxJambs(
+  lineMap: LineMapData,
+  minY: number,
+  maxY: number,
+  minX: number,
+  maxX: number,
+): { leftLm: number; rightLm: number } {
+  const { width: wm, height: hm, mask } = lineMap;
+  const y0 = Math.max(1, minY);
+  const y1 = Math.min(hm - 2, maxY);
+  const stripH = y1 - y0 + 1;
+
+  const pad = Math.max(12, Math.round((maxX - minX + 1) * 0.42));
+  const xStart = Math.max(1, minX - pad);
+  const xEnd = Math.min(wm - 2, maxX + pad);
+  const midX = (minX + maxX) * 0.5;
+
+  const colSum = new Float64Array(wm);
+  for (let x = xStart; x <= xEnd; x++) {
+    let s = 0;
+    for (let y = y0; y <= y1; y++) s += mask[y * wm + x];
+    colSum[x] = s;
+  }
+
+  const blurred = new Float64Array(wm);
+  for (let x = xStart; x <= xEnd; x++) {
+    let acc = 0;
+    let n = 0;
+    for (let dx = -3; dx <= 3; dx++) {
+      const xx = x + dx;
+      if (xx >= xStart && xx <= xEnd) {
+        acc += colSum[xx];
+        n++;
+      }
+    }
+    blurred[x] = n > 0 ? acc / n : 0;
+  }
+
+  let maxVal = 0;
+  for (let x = xStart; x <= xEnd; x++) {
+    if (blurred[x] > maxVal) maxVal = blurred[x];
+  }
+  const minPeak = Math.max(maxVal * 0.2, stripH * 0.09);
+
+  const roughPeaks: number[] = [];
+  for (let x = xStart + 3; x <= xEnd - 3; x++) {
+    const v = blurred[x];
+    if (v < minPeak) continue;
+    let isMax = true;
+    for (let dx = -3; dx <= 3; dx++) {
+      if (dx === 0) continue;
+      if (blurred[x + dx] > v + 1e-6) {
+        isMax = false;
+        break;
+      }
+    }
+    if (isMax) roughPeaks.push(x);
+  }
+
+  const peaks = mergePeakColumns(roughPeaks, blurred, 8);
+
+  const dualMeanTwoStrongest = (
+    band: number[],
+    fallback: number,
+  ): number => {
+    if (band.length === 0) return fallback;
+    if (band.length === 1) return band[0];
+    const scored = band.map((p) => ({ p, v: blurred[p] }));
+    scored.sort((a, b) => b.v - a.v);
+    const top = scored.slice(0, 2);
+    top.sort((a, b) => a.p - b.p);
+    return (top[0].p + top[1].p) / 2;
+  };
+
+  const leftBand = peaks.filter((p) => p >= xStart && p <= midX);
+  const rightBand = peaks.filter((p) => p >= midX && p <= xEnd);
+
+  let leftLm = dualMeanTwoStrongest(leftBand, minX);
+  let rightLm = dualMeanTwoStrongest(rightBand, maxX);
+
+  const minGapLm = 6;
+  if (rightLm <= leftLm + minGapLm) {
+    leftLm = minX;
+    rightLm = maxX;
+  }
+
+  return { leftLm, rightLm };
+}
+
+/**
  * Infer left/right jambs of a door/window-style opening from MLSD vertical
  * line density. The user taps roughly inside or on the opening; we snap the
  * seed to the nearest MLSD pixel, sum lit pixels per column across a horizontal
@@ -543,8 +638,16 @@ export function inferOpeningWidthFromMlsd(
   const rightPeaks = peaks.filter((p) => p > lx);
   if (leftPeaks.length === 0 || rightPeaks.length === 0) return null;
 
-  const leftLm = Math.max(...leftPeaks);
-  const rightLm = Math.min(...rightPeaks);
+  const leftLmRaw = Math.max(...leftPeaks);
+  const rightLmRaw = Math.min(...rightPeaks);
+
+  const { leftLm, rightLm } = refineOpeningBBoxJambs(
+    lineMap,
+    y0,
+    y1,
+    leftLmRaw,
+    rightLmRaw,
+  );
 
   const spanLm = rightLm - leftLm;
   const minSpanLm = Math.max(18, Math.round(Math.min(wm, hm) * 0.035));
@@ -594,8 +697,9 @@ function nearestInteriorPixel(
  * User taps once inside a dark (non-line) opening in the MLSD map (window/door
  * interior). We flood-fill through mask==0 pixels within a Chebyshev radius of
  * that interior seed so the region does not leak across the whole facade, take
- * the axis-aligned bounding box, and return a horizontal segment across its
- * width at mid-height.
+ * the axis-aligned bounding box, then refine horizontal endpoints using dual
+ * vertical peaks (outer vs inner frame lines). Returns a horizontal segment at
+ * mid-height.
  *
  * Falls back callers should try `inferOpeningWidthFromMlsd` if this returns null.
  */
@@ -677,8 +781,17 @@ export function inferOpeningFromInteriorClick(
     0,
     Math.min(imageHeight - 1, yMidLm / scaleY),
   );
-  let leftX = minX / scaleX;
-  let rightX = maxX / scaleX;
+
+  const { leftLm, rightLm } = refineOpeningBBoxJambs(
+    lineMap,
+    minY,
+    maxY,
+    minX,
+    maxX,
+  );
+
+  let leftX = leftLm / scaleX;
+  let rightX = rightLm / scaleX;
   leftX = Math.max(0, Math.min(imageWidth - 1, leftX));
   rightX = Math.max(0, Math.min(imageWidth - 1, rightX));
 
