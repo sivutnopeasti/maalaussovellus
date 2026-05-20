@@ -139,11 +139,12 @@ export default function HomePage() {
         console.error("[upload]", body?.detail ?? body?.error ?? res.status);
         return;
       }
-      const { url, path } = (await res.json()) as {
+      const { url, storageUrl, path } = (await res.json()) as {
         url: string;
+        storageUrl?: string;
         path?: string;
       };
-      setUploadedImageUrl(url);
+      setUploadedImageUrl(storageUrl ?? url);
       if (path) setUploadedStoragePath(path);
       try {
         const r = await fetch("/api/lines", {
@@ -264,8 +265,12 @@ export default function HomePage() {
           fd.append("file", imageFile);
           const res = await fetch("/api/upload", { method: "POST", body: fd });
           if (!res.ok) throw new Error("Kuvan lataaminen epäonnistui.");
-          const payload = (await res.json()) as { url: string; path?: string };
-          imgUrl = payload.url;
+          const payload = (await res.json()) as {
+            url: string;
+            storageUrl?: string;
+            path?: string;
+          };
+          imgUrl = payload.storageUrl ?? payload.url;
           storagePath = payload.path ?? null;
           setUploadedImageUrl(imgUrl);
           setUploadedStoragePath(storagePath);
