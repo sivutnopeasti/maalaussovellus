@@ -27,6 +27,7 @@ import {
   storeWallHeight,
   type FacadeProject,
 } from "@/lib/wallHeight";
+import { useMlsdLineMap } from "@/lib/useMlsdLineMap";
 
 import IntroScreen from "./_screens/IntroScreen";
 import InstructionModal from "./_screens/InstructionModal";
@@ -155,6 +156,7 @@ export default function HomePage() {
   const wallCount = project?.measurements.length ?? 0;
   const wallIndex = wallCount + 1;
   const autoMode = storedWallHeightM !== null && storedWallHeightM > 0;
+  const { ready: mlsdReady } = useMlsdLineMap(mlsdMapUrl);
 
   // ── 1. Intro → open camera ────────────────────────────────────────────────
   const handleOpenCamera = useCallback(() => {
@@ -421,7 +423,11 @@ export default function HomePage() {
       {/* ── 3. REFERENCE INTRO ───────────────────────────────────────────── */}
       {step === "ref-intro" && (
         <>
-          <PhotoBackground dataUrl={imageDataUrl} />
+          {mlsdReady && imageDataUrl ? (
+            <PhotoBackground dataUrl={imageDataUrl} />
+          ) : (
+            <IntroBackdrop />
+          )}
           <InstructionModal
             kind="reference"
             onContinue={handleReferenceIntroDone}
@@ -452,7 +458,11 @@ export default function HomePage() {
       {/* ── 5. POLYGON INTRO ─────────────────────────────────────────────── */}
       {step === "poly-intro" && (
         <>
-          <PhotoBackground dataUrl={imageDataUrl} />
+          {mlsdReady && imageDataUrl ? (
+            <PhotoBackground dataUrl={imageDataUrl} />
+          ) : (
+            <IntroBackdrop />
+          )}
           <InstructionModal
             kind="polygon"
             onContinue={handlePolygonIntroDone}
@@ -513,6 +523,10 @@ export default function HomePage() {
 }
 
 // ── Sub-screens (kept here because they share the page's state shape) ──────
+
+function IntroBackdrop() {
+  return <div className="absolute inset-0 bg-slate-900" />;
+}
 
 function PhotoBackground({ dataUrl }: { dataUrl: string }) {
   if (!dataUrl) return null;

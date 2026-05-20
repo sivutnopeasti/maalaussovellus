@@ -5,13 +5,13 @@ import { Hexagon, RotateCcw, Check, Undo2 } from "lucide-react";
 import type { Point, PolygonData, ReferenceData } from "@/lib/types";
 import { findReferenceVerticalEdge } from "@/lib/wallHeight";
 import {
-  buildLineMap,
   snapToNearestLine,
   snapToNearestCorner,
-  type LineMapData,
 } from "@/lib/lineSnap";
+import { useMlsdLineMap } from "@/lib/useMlsdLineMap";
 import { useCanvasViewport } from "@/lib/useCanvasViewport";
 import ZoomControls from "./ZoomControls";
+import MlsdCanvasGate from "./MlsdCanvasGate";
 
 interface Props {
   imageUrl: string;
@@ -75,9 +75,12 @@ export default function PolygonSelect({
   const canvasWrapperRef = useRef<HTMLDivElement>(null);
   const debugCanvasRef = useRef<HTMLCanvasElement>(null);
   const imageRef = useRef<HTMLImageElement | null>(null);
-  const mlsdImageRef = useRef<HTMLImageElement | null>(null);
-  const lineMapRef = useRef<LineMapData | null>(null);
-  const [lineMapReady, setLineMapReady] = useState(false);
+  const {
+    lineMapRef,
+    status: mlsdStatus,
+    ready: mlsdReady,
+    sourceImage: mlsdSourceImage,
+  } = useMlsdLineMap(mlsdMapUrl);
   const [imgDims, setImgDims] = useState({ w: 0, h: 0 });
   const [containerSize, setContainerSize] = useState({ w: 0, h: 0 });
   /** Vertex being dragged; null when not dragging. */
@@ -105,11 +108,6 @@ export default function PolygonSelect({
   const [canvasSize, setCanvasSize] = useState({ w: 0, h: 0 });
   const [scale, setScale] = useState(1);
   const [phase, setPhase] = useState<Phase>("drawing");
-  /** MLSD load state — surfaced to the user so they know whether snap
-   *  is actually engaged. */
-  const [mlsdStatus, setMlsdStatus] = useState<
-    "idle" | "loading" | "ready" | "cors-error" | "load-error"
-  >("idle");
   const [mlsdStats, setMlsdStats] = useState<{
     whitePixels: number;
     rawWhitePixels: number;
@@ -179,61 +177,20 @@ export default function PolygonSelect({
     });
   }, [imgDims, containerSize]);
 
-  // Load and decode the M-LSD line map for click snapping. We do this
-  // off-screen as soon as the URL is available — typically before the
-  // user has finished placing their first point. The decoded HTMLImage
-  // is also kept so the debug-canvas below can render it.
   useEffect(() => {
-    if (!mlsdMapUrl) {
-      setMlsdStatus("idle");
+    if (!mlsdReady || !lineMapRef.current) {
+      setMlsdStats(null);
       return;
     }
-    let cancelled = false;
-    setMlsdStatus("loading");
-    const img = new Image();
-    img.crossOrigin = "anonymous";
-    img.onload = () => {
-      if (cancelled) return;
-      try {
-        const lm = buildLineMap(img);
-        lineMapRef.current = lm;
-        mlsdImageRef.current = img;
-        setLineMapReady(true);
-        setMlsdStatus("ready");
-        setMlsdStats({
-          whitePixels: lm.whitePixels,
-          rawWhitePixels: lm.rawWhitePixels,
-          whiteRatio: lm.whiteRatio,
-          width: lm.width,
-          height: lm.height,
-        });
-        console.log("[snap] MLSD map decoded", {
-          mlsd: `${lm.width}×${lm.height}`,
-          source: `${imageWidth}×${imageHeight}`,
-          whitePixels: lm.whitePixels,
-          whiteRatio: (lm.whiteRatio * 100).toFixed(2) + "%",
-        });
-      } catch (err) {
-        // getImageData throws a SecurityError when the CDN response
-        // doesn't include CORS headers — the most common failure mode
-        // for Fal-hosted line maps.
-        const msg = err instanceof Error ? err.message : String(err);
-        const isCors = /tainted|cors|cross.?origin|security/i.test(msg);
-        setMlsdStatus(isCors ? "cors-error" : "load-error");
-        console.warn("[snap] failed to decode MLSD map", err);
-      }
-    };
-    img.onerror = () => {
-      if (!cancelled) {
-        setMlsdStatus("load-error");
-        console.warn("[snap] MLSD image failed to load");
-      }
-    };
-    img.src = mlsdMapUrl;
-    return () => {
-      cancelled = true;
-    };
-  }, [mlsdMapUrl, imageWidth, imageHeight]);
+    const lm = lineMapRef.current;
+    setMlsdStats({
+      whitePixels: lm.whitePixels,
+      rawWhitePixels: lm.rawWhitePixels,
+      whiteRatio: lm.whiteRatio,
+      width: lm.width,
+      height: lm.height,
+    });
+  }, [mlsdReady, lineMapRef]);
 
   // Effective pixels-per-meter for the segment labels. Two sources:
   //  1) Manual reference (`reference.pixelsPerMeter`) — used in photo 1.
@@ -502,7 +459,7 @@ export default function PolygonSelect({
    *  building lines. Temporary feature. */
   const redrawDebug = useCallback(() => {
     const canvas = debugCanvasRef.current;
-    const mlsd = mlsdImageRef.current;
+    const mlsd = mlsdSourceImage;
     if (!canvas || !mlsd || canvasSize.w === 0) return;
     const ctx = canvas.getContext("2d")!;
     viewport.resetTransform(ctx);
@@ -511,12 +468,12 @@ export default function PolygonSelect({
     viewport.applyTransform(ctx);
     ctx.drawImage(mlsd, 0, 0, canvasSize.w, canvasSize.h);
     drawOverlay(ctx, canvas);
-  }, [canvasSize, drawOverlay, viewport]);
+  }, [canvasSize, drawOverlay, viewport, mlsdSourceImage]);
 
   useEffect(() => {
     redraw();
     redrawDebug();
-  }, [redraw, redrawDebug, lineMapReady]);
+  }, [redraw, redrawDebug, mlsdReady]);
 
   /** Resolve the snap target for a given raw point in image-space.
    *  Two-stage strategy:
@@ -885,48 +842,57 @@ export default function PolygonSelect({
           mode). In debug mode it has a fixed height so the MLSD view
           below has space too. */}
       <div ref={canvasWrapperRef} className={canvasWrapperCls}>
-        {canvasSize.w > 0 && (
-          <canvas
-            ref={canvasRef}
-            width={canvasSize.w}
-            height={canvasSize.h}
-            onClick={handleCanvasClick}
-            onPointerDown={onPointerDown}
-            onPointerMove={onPointerMove}
-            onPointerUp={onPointerUp}
-            onPointerCancel={onPointerCancel}
-            onPointerLeave={onPointerLeave}
-            onWheel={viewport.eventProps.onWheel}
-            onTouchStart={onTouchStart}
-            onTouchMove={onTouchMovePoly}
-            onTouchEnd={viewport.eventProps.onTouchEnd}
-            className={`block select-none ${
-              draggingIdx !== null
-                ? "cursor-grabbing"
-                : viewport.isPanning
+        <MlsdCanvasGate
+          status={mlsdStatus}
+          ready={mlsdReady}
+          errorBanner={
+            mlsdStatus === "error"
+              ? "Reunatunnistus epäonnistui — nurkat ilman automaattista kiinnitystä."
+              : undefined
+          }
+        >
+          {canvasSize.w > 0 && (
+            <canvas
+              ref={canvasRef}
+              width={canvasSize.w}
+              height={canvasSize.h}
+              onClick={handleCanvasClick}
+              onPointerDown={onPointerDown}
+              onPointerMove={onPointerMove}
+              onPointerUp={onPointerUp}
+              onPointerCancel={onPointerCancel}
+              onPointerLeave={onPointerLeave}
+              onWheel={viewport.eventProps.onWheel}
+              onTouchStart={onTouchStart}
+              onTouchMove={onTouchMovePoly}
+              onTouchEnd={viewport.eventProps.onTouchEnd}
+              className={`block select-none ${
+                draggingIdx !== null
                   ? "cursor-grabbing"
-                  : phase === "drawing" && hoverIdx !== null
-                    ? "cursor-grab"
-                    : phase === "drawing"
-                      ? "cursor-crosshair"
-                      : viewport.zoom > 1
-                        ? "cursor-grab"
-                        : "cursor-default"
-            }`}
-            style={{
-              maxWidth: "100%",
-              maxHeight: "100%",
-            }}
-          />
-        )}
-        {canvasSize.w > 0 && (
-          <ZoomControls
-            zoom={viewport.zoom}
-            zoomBy={viewport.zoomBy}
-            reset={viewport.reset}
-          />
-        )}
-
+                  : viewport.isPanning
+                    ? "cursor-grabbing"
+                    : phase === "drawing" && hoverIdx !== null
+                      ? "cursor-grab"
+                      : phase === "drawing"
+                        ? "cursor-crosshair"
+                        : viewport.zoom > 1
+                          ? "cursor-grab"
+                          : "cursor-default"
+              }`}
+              style={{
+                maxWidth: "100%",
+                maxHeight: "100%",
+              }}
+            />
+          )}
+          {canvasSize.w > 0 && (
+            <ZoomControls
+              zoom={viewport.zoom}
+              zoomBy={viewport.zoomBy}
+              reset={viewport.reset}
+            />
+          )}
+        </MlsdCanvasGate>
       </div>
 
       {/* Action bar */}
@@ -1020,20 +986,17 @@ export default function PolygonSelect({
                 </span>
               </div>
             )}
-            {mlsdStatus === "cors-error" && (
+            {mlsdStatus === "error" && (
               <p className="text-red-700">
-                MLSD-kuva ladattu, mutta selain estää datan luvun
-                (CORS). Snap ei voi toimia ennen kuin Fal CDN palauttaa
-                CORS-headerit.
-              </p>
-            )}
-            {mlsdStatus === "load-error" && (
-              <p className="text-red-700">
-                MLSD-kuvaa ei pystytty lataamaan. Tarkista verkkoyhteys.
+                MLSD-viivakarttaa ei pystytty lataamaan tai purkamaan.
+                Tarkista verkkoyhteys.
               </p>
             )}
             {mlsdStatus === "loading" && (
               <p className="text-slate-500">Ladataan MLSD-viivakarttaa…</p>
+            )}
+            {mlsdStatus === "idle" && (
+              <p className="text-slate-500">Odotetaan MLSD-kuvaa…</p>
             )}
           </div>
 
@@ -1043,7 +1006,7 @@ export default function PolygonSelect({
               Debug: MLSD-viivakartta
             </h3>
             <div className="relative h-[55vh] rounded-xl overflow-hidden border-2 border-slate-200 bg-slate-900 flex items-center justify-center">
-              {mlsdImageRef.current && canvasSize.w > 0 ? (
+              {mlsdSourceImage && canvasSize.w > 0 ? (
                 <canvas
                   ref={debugCanvasRef}
                   width={canvasSize.w}
@@ -1137,14 +1100,7 @@ function SnapStatusBadge({ status }: { status: string }) {
     idle: { label: "Ei MLSD-kuvaa", cls: "bg-slate-200 text-slate-700" },
     loading: { label: "Ladataan…", cls: "bg-amber-100 text-amber-700" },
     ready: { label: "Valmis", cls: "bg-emerald-100 text-emerald-700" },
-    "cors-error": {
-      label: "CORS-virhe",
-      cls: "bg-red-100 text-red-700",
-    },
-    "load-error": {
-      label: "Latausvirhe",
-      cls: "bg-red-100 text-red-700",
-    },
+    error: { label: "Virhe", cls: "bg-red-100 text-red-700" },
   };
   const m = map[status] ?? map.idle;
   return (

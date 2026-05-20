@@ -6,16 +6,13 @@ import type { Point, ReferenceData } from "@/lib/types";
 import { useCanvasViewport } from "@/lib/useCanvasViewport";
 import { drawLoupe } from "@/lib/canvasLoupe";
 import {
-  buildLineMap,
   inferOpeningFromInteriorClick,
   inferOpeningWidthFromMlsd,
   snapToNearestLine,
-  type LineMapData,
 } from "@/lib/lineSnap";
+import { useMlsdLineMap } from "@/lib/useMlsdLineMap";
 import ZoomControls from "./ZoomControls";
-
-/** Temporary: show MLSD raster under the photo on the reference step. */
-const SHOW_MLSD_UNDER_REFERENCE = true;
+import MlsdCanvasGate from "./MlsdCanvasGate";
 
 /** Canvas strokes aligned with app CTAs (blue-600 / blue-700). */
 const BRAND_BLUE = "#2563eb";
@@ -50,8 +47,8 @@ export default function ReferenceMeasure({
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const canvasWrapperRef = useRef<HTMLDivElement>(null);
   const imageRef = useRef<HTMLImageElement | null>(null);
-  const lineMapRef = useRef<LineMapData | null>(null);
-  const [lineMapReady, setLineMapReady] = useState(false);
+  const { lineMapRef, status: mlsdStatus, ready: mlsdReady } =
+    useMlsdLineMap(mlsdMapUrl);
   const [phase, setPhase] = useState<Phase>("point1");
   const [points, setPoints] = useState<Point[]>([]);
   const [meters, setMeters] = useState("");
@@ -121,39 +118,6 @@ export default function ReferenceMeasure({
   /** Effective source dimensions (URL image may decode before props catch up). */
   const srcW = imageWidth > 0 ? imageWidth : imgDims.w;
   const srcH = imageHeight > 0 ? imageHeight : imgDims.h;
-
-  // Decode MLSD raster for edge snapping (same pipeline as PolygonSelect).
-  useEffect(() => {
-    if (!mlsdMapUrl) {
-      lineMapRef.current = null;
-      setLineMapReady(false);
-      return;
-    }
-    let cancelled = false;
-    const img = new Image();
-    img.crossOrigin = "anonymous";
-    img.onload = () => {
-      if (cancelled) return;
-      try {
-        const lm = buildLineMap(img);
-        lineMapRef.current = lm;
-        setLineMapReady(true);
-      } catch {
-        lineMapRef.current = null;
-        setLineMapReady(false);
-      }
-    };
-    img.onerror = () => {
-      if (!cancelled) {
-        lineMapRef.current = null;
-        setLineMapReady(false);
-      }
-    };
-    img.src = mlsdMapUrl;
-    return () => {
-      cancelled = true;
-    };
-  }, [mlsdMapUrl, srcW, srcH]);
 
   /** Snap raw coords to nearest MLSD line; second endpoint is forced to
    *  the same y as `anchorY` so the reference is always horizontal. */
@@ -562,7 +526,7 @@ export default function ReferenceMeasure({
       if (hitTest(img) !== null) return;
 
       if (phase === "point1") {
-        if (lineMapReady && lineMapRef.current) {
+        if (mlsdReady && lineMapRef.current) {
           const span =
             inferOpeningFromInteriorClick(
               img,
@@ -599,7 +563,7 @@ export default function ReferenceMeasure({
         setPhase("input");
       }
     },
-    [phase, viewport, eventToImage, hitTest, applyRefPoint, lineMapReady, srcW, srcH],
+    [phase, viewport, eventToImage, hitTest, applyRefPoint, mlsdReady, srcW, srcH],
   );
 
   // ── Confirm / reset ────────────────────────────────────────────────
@@ -652,8 +616,8 @@ export default function ReferenceMeasure({
         <Ruler className="w-4 h-4 text-blue-600 shrink-0" />
         {phase === "point1" && (
           <span className="text-blue-700 font-medium">
-            <strong>Napauta aukon sisään</strong> (tumma alue viivakuvassa
-            alla). Vaakaviiva syntyy automaattisesti. Tarvittaessa{" "}
+            <strong>Napauta oven tai ikkunan sisään</strong> — vaakaviiva
+            syntyy automaattisesti. Tarvittaessa{" "}
             <strong>Aloita alusta</strong> vasemmassa yläkulmassa. Jos
             tunnistus epäonnistuu: kaksi napautusta (alku → loppu).
           </span>
@@ -671,70 +635,63 @@ export default function ReferenceMeasure({
         )}
       </div>
 
-      {/* Main canvas + temporary MLSD preview below */}
+      {/* Main canvas — visible only after MLSD line map is ready */}
       <div className="flex flex-col flex-1 min-h-0 gap-2">
         <div
           ref={canvasWrapperRef}
           className="relative flex-1 min-h-0 rounded-xl overflow-hidden border-2 border-slate-200 bg-slate-900 flex items-center justify-center"
         >
-          {canvasSize.w > 0 && (
-            <canvas
-              ref={canvasRef}
-              width={canvasSize.w}
-              height={canvasSize.h}
-              // Apply viewport props first so we can override the pointer
-              // handlers below with the drag-aware versions.
-              {...viewport.eventProps}
-              onPointerDown={onPointerDown}
-              onPointerMove={onPointerMove}
-              onPointerUp={onPointerUp}
-              onPointerCancel={onPointerCancel}
-              onPointerLeave={onPointerLeave}
-              onTouchStart={onTouchStart}
-              onTouchMove={onTouchMove}
-              onTouchEnd={onTouchEnd}
-              onClick={handleCanvasClick}
-              className={`block select-none ${cursorClass}`}
-              style={{
-                maxWidth: "100%",
-                maxHeight: "100%",
-                touchAction: "none",
-              }}
-            />
-          )}
-          {canvasSize.w > 0 && (
-            <ZoomControls
-              zoom={viewport.zoom}
-              zoomBy={viewport.zoomBy}
-              reset={viewport.reset}
-            />
-          )}
-          {points.length >= 1 && (
-            <button
-              type="button"
-              onClick={reset}
-              className="absolute top-2 left-2 z-30 flex items-center gap-1.5 px-3 py-2 rounded-xl bg-white/95 text-blue-800 border border-blue-200 shadow-lg text-xs font-semibold hover:bg-blue-50 active:scale-[0.98] transition-transform"
-            >
-              <RotateCcw className="w-4 h-4 shrink-0" aria-hidden />
-              Aloita alusta
-            </button>
-          )}
+          <MlsdCanvasGate
+            status={mlsdStatus}
+            ready={mlsdReady}
+            errorBanner={
+              mlsdStatus === "error"
+                ? "Reunatunnistus epäonnistui — mittaa käsin kahdella napautuksella."
+                : undefined
+            }
+          >
+            {canvasSize.w > 0 && (
+              <canvas
+                ref={canvasRef}
+                width={canvasSize.w}
+                height={canvasSize.h}
+                {...viewport.eventProps}
+                onPointerDown={onPointerDown}
+                onPointerMove={onPointerMove}
+                onPointerUp={onPointerUp}
+                onPointerCancel={onPointerCancel}
+                onPointerLeave={onPointerLeave}
+                onTouchStart={onTouchStart}
+                onTouchMove={onTouchMove}
+                onTouchEnd={onTouchEnd}
+                onClick={handleCanvasClick}
+                className={`block select-none ${cursorClass}`}
+                style={{
+                  maxWidth: "100%",
+                  maxHeight: "100%",
+                  touchAction: "none",
+                }}
+              />
+            )}
+            {canvasSize.w > 0 && (
+              <ZoomControls
+                zoom={viewport.zoom}
+                zoomBy={viewport.zoomBy}
+                reset={viewport.reset}
+              />
+            )}
+            {points.length >= 1 && (
+              <button
+                type="button"
+                onClick={reset}
+                className="absolute top-2 left-2 z-30 flex items-center gap-1.5 px-3 py-2 rounded-xl bg-white/95 text-blue-800 border border-blue-200 shadow-lg text-xs font-semibold hover:bg-blue-50 active:scale-[0.98] transition-transform"
+              >
+                <RotateCcw className="w-4 h-4 shrink-0" aria-hidden />
+                Aloita alusta
+              </button>
+            )}
+          </MlsdCanvasGate>
         </div>
-
-        {SHOW_MLSD_UNDER_REFERENCE && mlsdMapUrl && (
-          <div className="relative shrink-0 h-[min(26vh,220px)] rounded-xl overflow-hidden border-2 border-dashed border-slate-300 bg-black flex items-center justify-center">
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img
-              src={mlsdMapUrl}
-              alt=""
-              crossOrigin="anonymous"
-              className="max-h-full max-w-full w-full object-contain"
-            />
-            <span className="pointer-events-none absolute bottom-1 left-2 text-[10px] font-medium text-white/90 bg-slate-900/70 px-1.5 py-0.5 rounded">
-              Reunaviivat — napauta tummaa aukkoa
-            </span>
-          </div>
-        )}
       </div>
 
       {/* Inline meter input — only while collecting the length. */}

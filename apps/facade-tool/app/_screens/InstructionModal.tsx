@@ -55,10 +55,10 @@ export default function InstructionModal({ kind, onContinue, autoMode }: Props) 
         <p className="mt-1.5 text-sm text-blue-100/90 leading-relaxed">
           {isReference ? (
             <>
-              <strong>Napauta oven tai ikkunan sisään</strong> (tumma alue
-              viivakuvassa) — vaakaviiva syntyy automaattisesti. Syötä sitten
-              aukon leveys metreissä (esim. ovi 0,9 m). Jos tunnistus epäonnistuu,
-              käytä kahta napautusta (alku → loppu).
+              <strong>Napauta oven tai ikkunan sisään</strong> — vaakaviiva
+              syntyy automaattisesti. Syötä sitten aukon leveys metreissä (esim.
+              ovi 0,9 m). Jos tunnistus epäonnistuu, käytä kahta napautusta
+              (alku → loppu).
             </>
           ) : autoMode ? (
             <>
@@ -87,7 +87,6 @@ export default function InstructionModal({ kind, onContinue, autoMode }: Props) 
           <span>
             {isReference ? (
               <>
-                Viivakuva kuvan alla näyttää tunnistetut reunat.{" "}
                 <strong>Pinch-zoom</strong> tai +/- -napit tarkentavat.{" "}
                 <strong>Aloita alusta</strong> kumoaa valinnan. Viiva pysyy aina
                 vaakasuorana.
