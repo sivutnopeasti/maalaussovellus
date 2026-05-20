@@ -81,7 +81,10 @@ export default function AsiakasPage() {
     setSubmitError(null);
     setSubmitting(true);
 
-    const uploaded = photos.filter((p) => p.imageUrl && p.storagePath);
+    // Accept photos that have any URL (Fal.ai or Supabase). storagePath may
+    // be null if the Supabase upload failed — use imageUrl as fallback so
+    // we don't lose photos just because the optional storage layer failed.
+    const uploaded = photos.filter((p) => p.imageUrl && !p.error);
     if (uploaded.length === 0) {
       setSubmitError("Ei yhtään onnistuneesti ladattua kuvaa.");
       setSubmitting(false);
@@ -97,7 +100,7 @@ export default function AsiakasPage() {
           customerPhone: phone.trim() || null,
           customerEmail: email.trim() || null,
           photos: uploaded.map((p) => ({
-            storagePath: p.storagePath!,
+            storagePath: p.storagePath ?? p.imageUrl!, // Fal URL as fallback
             imageUrl: p.imageUrl!,
             tiltData: p.tilt ?? null,
           })),
@@ -146,7 +149,8 @@ export default function AsiakasPage() {
   }
 
   const allUploaded = photos.length > 0 && photos.every((p) => !p.uploading);
-  const hasError = photos.some((p) => p.error);
+  // A photo with imageUrl is considered "ok" even if storagePath is null
+  const hasError = photos.some((p) => p.error && !p.imageUrl);
   const tiltCount = photos.filter((p) => p.tilt !== null).length;
 
   return (
