@@ -6,6 +6,7 @@ export const maxDuration = 30;
 interface PhotoInput {
   storagePath: string;
   imageUrl: string;
+  tiltData?: { beta: number; gamma: number; cameraTiltDeg: number } | null;
 }
 
 /**
@@ -66,6 +67,7 @@ export async function POST(req: NextRequest) {
           image_url: p.imageUrl,
           wall_label: `Seinä ${i + 1}`,
           sort_order: i,
+          tilt_data: p.tiltData ?? null,
         })),
       );
 

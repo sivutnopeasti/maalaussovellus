@@ -19,7 +19,7 @@ export async function GET(
     .select(
       `*, facade_quote_photos(
         id, image_url, storage_path, wall_label, wall_area_m2,
-        sort_order, reference_data, polygon_data
+        sort_order, reference_data, polygon_data, tilt_data
        )`,
     )
     .eq("id", id)

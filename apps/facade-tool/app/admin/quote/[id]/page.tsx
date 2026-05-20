@@ -15,7 +15,7 @@ import {
 } from "lucide-react";
 import ReferenceMeasure from "@/components/ReferenceMeasure";
 import PolygonSelect from "@/components/PolygonSelect";
-import type { PolygonData, ReferenceData } from "@/lib/types";
+import type { CaptureTilt, PolygonData, ReferenceData } from "@/lib/types";
 import {
   calculatePolygonMeasurement,
 } from "@/lib/measure";
@@ -31,6 +31,7 @@ interface Photo {
   sort_order: number;
   reference_data: ReferenceData | null;
   polygon_data: PolygonData | null;
+  tilt_data: CaptureTilt | null;
 }
 
 interface Quote {
@@ -185,13 +186,18 @@ export default function AdminQuotePage() {
       if (!activePhoto || !activeState?.reference) return;
       updateState(activePhoto.id, { polygon: poly });
       try {
+        // Use tilt captured by the customer's phone for keystone correction.
+        const tilt = activePhoto.tilt_data ?? null;
         const result = await calculatePolygonMeasurement(
           poly.points,
           [],
           activeState.imageWidth,
           activeState.imageHeight,
           activeState.reference,
-          { useKeystoneCorrection: false, sensorTiltBetaDeg: null },
+          {
+            useKeystoneCorrection: tilt !== null,
+            sensorTiltBetaDeg: tilt?.beta ?? null,
+          },
         );
         updateState(activePhoto.id, { area: result.wallAreaM2 });
       } catch (err) {
@@ -411,6 +417,13 @@ export default function AdminQuotePage() {
                 </button>
 
                 <div className="flex-1" />
+
+                {/* Tilt badge */}
+                {activePhoto.tilt_data && (
+                  <span className="text-xs text-cyan-700 bg-cyan-50 border border-cyan-200 px-2 py-1 rounded-lg font-mono">
+                    β {activePhoto.tilt_data.beta.toFixed(1)}° — keystonekorjaus käytössä
+                  </span>
+                )}
 
                 {/* MLSD button */}
                 <button
