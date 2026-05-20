@@ -2,6 +2,7 @@
 
 import { useCallback, useRef, useState } from "react";
 import { Camera, CheckCircle2, Loader2, Plus, Trash2, X } from "lucide-react";
+import PhotoInstructions from "@/components/PhotoInstructions";
 
 interface CapturedPhoto {
   dataUrl: string;
@@ -188,15 +189,14 @@ export default function AsiakasPage() {
       </div>
 
       <div className="px-5 pb-10 max-w-lg mx-auto space-y-6">
+        {/* Instruction animation */}
+        <PhotoInstructions />
+
         {/* Step 1: Photos */}
         <section className="space-y-3">
           <h2 className="font-bold text-slate-800 text-sm uppercase tracking-wider">
-            1. Ota kuvat seinistä
+            Ota kuvat seinistä
           </h2>
-          <p className="text-xs text-slate-500 leading-relaxed">
-            Asetu suoraan seinän eteen niin, että koko seinä näkyy kuvassa.
-            Ota yksi kuva per seinä.
-          </p>
 
           {/* Photo grid */}
           {photos.length > 0 && (
