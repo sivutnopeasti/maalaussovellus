@@ -779,9 +779,9 @@ function estimateInteriorVerticalCenterLm(
 
 /**
  * Within an opening's vertical band, MLSD often draws two parallel vertical
- * edges (outer frame vs inner glazing bar). On each side of the opening
- * midline we take the two strongest column peaks and average their positions —
- * i.e. midpoint between outer and inner jamb.
+ * edges (outer frame vs inner glazing/reveal). Customers measure the
+ * interior opening width, so on each side we take the two strongest column
+ * peaks and pick the inner jamb (closest to the opening centre).
  */
 function refineOpeningBBoxJambs(
   lineMap: LineMapData,
@@ -844,24 +844,27 @@ function refineOpeningBBoxJambs(
 
   const peaks = mergePeakColumns(roughPeaks, blurred, 8);
 
-  const dualMeanTwoStrongest = (
+  /** Inner jamb on one side: strongest parallel peaks, then edge nearest centre. */
+  const pickInnermostJamb = (
     band: number[],
+    side: "left" | "right",
     fallback: number,
   ): number => {
     if (band.length === 0) return fallback;
     if (band.length === 1) return band[0];
     const scored = band.map((p) => ({ p, v: blurred[p] }));
     scored.sort((a, b) => b.v - a.v);
-    const top = scored.slice(0, 2);
-    top.sort((a, b) => a.p - b.p);
-    return (top[0].p + top[1].p) / 2;
+    const candidates = scored
+      .slice(0, Math.min(2, scored.length))
+      .map((s) => s.p);
+    return side === "left" ? Math.max(...candidates) : Math.min(...candidates);
   };
 
   const leftBand = peaks.filter((p) => p >= xStart && p <= midX);
   const rightBand = peaks.filter((p) => p >= midX && p <= xEnd);
 
-  let leftLm = dualMeanTwoStrongest(leftBand, minX);
-  let rightLm = dualMeanTwoStrongest(rightBand, maxX);
+  let leftLm = pickInnermostJamb(leftBand, "left", minX);
+  let rightLm = pickInnermostJamb(rightBand, "right", maxX);
 
   const minGapLm = 6;
   if (rightLm <= leftLm + minGapLm) {
