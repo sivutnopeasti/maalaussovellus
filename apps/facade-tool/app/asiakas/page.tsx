@@ -134,7 +134,7 @@ export default function AsiakasPage() {
 
   if (step === "done") {
     return (
-      <div data-scroll="true" className="min-h-screen bg-gradient-to-br from-blue-50 to-white flex items-center justify-center px-6">
+      <div data-scroll="true" className="absolute inset-0 bg-gradient-to-br from-blue-50 to-white flex items-center justify-center px-6">
         <div className="text-center max-w-sm">
           <div className="mx-auto w-20 h-20 rounded-full bg-green-100 flex items-center justify-center mb-4">
             <CheckCircle2 className="w-10 h-10 text-green-600" />
@@ -163,7 +163,7 @@ export default function AsiakasPage() {
 
   if (step === "submitting") {
     return (
-      <div data-scroll="true" className="min-h-screen bg-white flex items-center justify-center">
+      <div data-scroll="true" className="absolute inset-0 bg-white flex items-center justify-center">
         <div className="text-center space-y-3">
           <Loader2 className="w-10 h-10 animate-spin text-blue-500 mx-auto" />
           <p className="text-slate-600 font-medium">Lähetetään pyyntöä…</p>
@@ -173,7 +173,7 @@ export default function AsiakasPage() {
   }
 
   return (
-    <div data-scroll="true" className="min-h-screen bg-gradient-to-br from-slate-50 via-white to-blue-50">
+    <div data-scroll="true" className="absolute inset-0 bg-gradient-to-br from-slate-50 via-white to-blue-50">
       {/* Header */}
       <div className="px-5 pt-10 pb-4 text-center">
         <div className="mx-auto w-16 h-16 rounded-2xl bg-gradient-to-br from-blue-500 to-blue-700 flex items-center justify-center shadow-lg shadow-blue-200 mb-4">
