@@ -27,8 +27,6 @@ import {
   storeWallHeight,
   type FacadeProject,
 } from "@/lib/wallHeight";
-import { useMlsdLineMap } from "@/lib/useMlsdLineMap";
-
 import IntroScreen from "./_screens/IntroScreen";
 import InstructionModal from "./_screens/InstructionModal";
 import AnalysingScreen from "./_screens/AnalysingScreen";
@@ -133,7 +131,14 @@ export default function HomePage() {
       const fd = new FormData();
       fd.append("file", file);
       const res = await fetch("/api/upload", { method: "POST", body: fd });
-      if (!res.ok) return;
+      if (!res.ok) {
+        const body = (await res.json().catch(() => null)) as {
+          error?: string;
+          detail?: string;
+        } | null;
+        console.error("[upload]", body?.detail ?? body?.error ?? res.status);
+        return;
+      }
       const { url, path } = (await res.json()) as {
         url: string;
         path?: string;
@@ -149,20 +154,20 @@ export default function HomePage() {
         if (r.ok) {
           const { url: mlsdUrl } = await r.json();
           if (mlsdUrl) setMlsdMapUrl(mlsdUrl);
+        } else {
+          console.error("[mlsd]", await r.text().catch(() => r.status));
         }
-      } catch {
-        /* non-essential */
+      } catch (err) {
+        console.error("[mlsd]", err);
       }
-    } catch {
-      /* upload errors surface in the analysing step */
+    } catch (err) {
+      console.error("[upload]", err);
     }
   }, []);
 
   const wallCount = project?.measurements.length ?? 0;
   const wallIndex = wallCount + 1;
   const autoMode = storedWallHeightM !== null && storedWallHeightM > 0;
-  const { ready: mlsdReady } = useMlsdLineMap(mlsdMapUrl);
-
   // ── 1. Intro → open camera ────────────────────────────────────────────────
   const handleOpenCamera = useCallback(() => {
     resetCurrentPhoto();
@@ -201,10 +206,9 @@ export default function HomePage() {
           setStep("poly-intro");
         } else {
           setStep("ref-intro");
-          // Warm up hosted image + MLSD while the user reads ref-intro so
-          // reference-line snapping works on ref-draw.
-          void runUploadAndMlsdForFile(file);
         }
+        // Warm up hosted image + MLSD while the user reads intro instructions.
+        void runUploadAndMlsdForFile(file);
       };
       img.src = dataUrl;
     },
@@ -435,7 +439,7 @@ export default function HomePage() {
       {/* ── 3. REFERENCE INTRO ───────────────────────────────────────────── */}
       {step === "ref-intro" && (
         <>
-          {mlsdReady && imageDataUrl ? (
+          {imageDataUrl ? (
             <PhotoBackground dataUrl={imageDataUrl} />
           ) : (
             <IntroBackdrop />
@@ -470,7 +474,7 @@ export default function HomePage() {
       {/* ── 5. POLYGON INTRO ─────────────────────────────────────────────── */}
       {step === "poly-intro" && (
         <>
-          {mlsdReady && imageDataUrl ? (
+          {imageDataUrl ? (
             <PhotoBackground dataUrl={imageDataUrl} />
           ) : (
             <IntroBackdrop />

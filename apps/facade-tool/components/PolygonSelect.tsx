@@ -845,6 +845,7 @@ export default function PolygonSelect({
         <MlsdCanvasGate
           status={mlsdStatus}
           ready={mlsdReady}
+          showWithoutMlsd
           errorBanner={
             mlsdStatus === "error"
               ? "Reunatunnistus epäonnistui — nurkat ilman automaattista kiinnitystä."

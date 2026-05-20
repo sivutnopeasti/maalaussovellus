@@ -644,6 +644,7 @@ export default function ReferenceMeasure({
           <MlsdCanvasGate
             status={mlsdStatus}
             ready={mlsdReady}
+            showWithoutMlsd
             errorBanner={
               mlsdStatus === "error"
                 ? "Reunatunnistus epäonnistui — mittaa käsin kahdella napautuksella."
