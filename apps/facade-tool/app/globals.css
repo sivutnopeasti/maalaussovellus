@@ -35,8 +35,8 @@ body {
 }
 
 /* The page sets data-scroll="true" on its main element only when the
- * step actually needs vertical scrolling (e.g. the final summary). All
- * other steps stay completely locked. */
+ * step actually needs vertical scrolling (e.g. the final summary / asiakas).
+ * We also open the parent frame so it doesn't clip the content. */
 [data-scroll="true"] {
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
@@ -44,6 +44,17 @@ body {
 [data-scroll="false"] {
   overflow: hidden;
   touch-action: pan-x pinch-zoom;
+}
+
+/* When any descendant requests scroll, let the frame act as the scroll
+ * container instead of clipping.  :has() is supported by all modern
+ * browsers (Chrome 105+, Safari 15.4+, Firefox 121+). */
+.app-frame:has([data-scroll="true"]) {
+  overflow-y: auto;
+  overflow-x: hidden;
+  -webkit-overflow-scrolling: touch;
+  height: auto;
+  min-height: 100dvh;
 }
 
 /* iOS Safari zooms in on inputs whose computed font-size is < 16px.
