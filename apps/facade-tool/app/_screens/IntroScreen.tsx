@@ -1,7 +1,6 @@
 "use client";
 
-import { Camera, Trash2, FlaskConical } from "lucide-react";
-import Link from "next/link";
+import { Camera, Trash2 } from "lucide-react";
 import type { FacadeProject } from "@/lib/wallHeight";
 
 interface Props {
@@ -81,13 +80,6 @@ export default function IntroScreen({
             Aloita alusta
           </button>
         )}
-        <Link
-          href="/v2"
-          className="w-full py-2 rounded-xl text-slate-400 text-xs font-medium hover:bg-slate-100 flex items-center justify-center gap-1.5 transition-colors"
-        >
-          <FlaskConical className="w-3.5 h-3.5" />
-          Kokeile AR-mittausta (beta)
-        </Link>
       </div>
     </div>
   );

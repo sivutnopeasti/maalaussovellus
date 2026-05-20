@@ -25,8 +25,6 @@ interface Props {
   imageHeight: number;
   /** M-LSD line map URL when available */
   mlsdMapUrl?: string;
-  /** Pre-fill the meter value (e.g. from an AR measurement). */
-  initialMeters?: number;
   onReferenceSet: (data: ReferenceData) => void;
 }
 
@@ -44,7 +42,6 @@ export default function ReferenceMeasure({
   imageWidth,
   imageHeight,
   mlsdMapUrl,
-  initialMeters,
   onReferenceSet,
 }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -54,9 +51,7 @@ export default function ReferenceMeasure({
     useMlsdLineMap(mlsdMapUrl);
   const [phase, setPhase] = useState<Phase>("point1");
   const [points, setPoints] = useState<Point[]>([]);
-  const [meters, setMeters] = useState(
-    initialMeters !== undefined ? String(initialMeters) : "",
-  );
+  const [meters, setMeters] = useState("");
   const [canvasSize, setCanvasSize] = useState({ w: 0, h: 0 });
   const [scale, setScale] = useState(1);
   const [imgDims, setImgDims] = useState({ w: 0, h: 0 });
