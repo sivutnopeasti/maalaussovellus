@@ -1,7 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createClient } from "@supabase/supabase-js";
+import { createServiceSupabase } from "@/lib/supabaseServer";
 
 export const maxDuration = 30;
+
+interface QuotePhotoInput {
+  storagePath: string;
+  imageUrl: string;
+  wallLabel?: string;
+  wallAreaM2?: number;
+}
 
 export async function POST(req: NextRequest) {
   try {
@@ -14,7 +21,17 @@ export async function POST(req: NextRequest) {
       unitPrice,
       fixedCosts,
       notes,
-    } = body;
+      photos,
+    } = body as {
+      projectId?: string | null;
+      imageUrl?: string | null;
+      visualizedUrl?: string | null;
+      wallAreaM2?: number;
+      unitPrice?: number;
+      fixedCosts?: number;
+      notes?: string | null;
+      photos?: QuotePhotoInput[];
+    };
 
     if (wallAreaM2 == null || unitPrice == null) {
       return NextResponse.json(
@@ -23,19 +40,16 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Use service role key if available for writes, fall back to anon key
-    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-    const supabaseKey =
-      process.env.SUPABASE_SERVICE_ROLE_KEY ??
-      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
-
-    const supabase = createClient(supabaseUrl, supabaseKey);
+    const supabase = createServiceSupabase();
+    const photoList = Array.isArray(photos) ? photos : [];
+    const primaryImageUrl =
+      photoList[0]?.imageUrl ?? imageUrl ?? null;
 
     const { data, error } = await supabase
       .from("facade_quotes")
       .insert({
         project_id: projectId || null,
-        image_url: imageUrl ?? null,
+        image_url: primaryImageUrl,
         visualized_url: visualizedUrl ?? null,
         wall_area_m2: wallAreaM2,
         unit_price: unitPrice,
@@ -51,6 +65,33 @@ export async function POST(req: NextRequest) {
         { error: "Database insert failed", detail: error.message },
         { status: 500 },
       );
+    }
+
+    if (photoList.length > 0) {
+      const { error: photosError } = await supabase
+        .from("facade_quote_photos")
+        .insert(
+          photoList.map((p, i) => ({
+            quote_id: data.id,
+            storage_path: p.storagePath,
+            image_url: p.imageUrl,
+            wall_label: p.wallLabel ?? `Seinä ${i + 1}`,
+            wall_area_m2: p.wallAreaM2 ?? null,
+            sort_order: i,
+          })),
+        );
+
+      if (photosError) {
+        console.error("[/api/quote] facade_quote_photos error:", photosError);
+        return NextResponse.json(
+          {
+            error: "Quote saved but photos failed",
+            detail: photosError.message,
+            quote: data,
+          },
+          { status: 500 },
+        );
+      }
     }
 
     return NextResponse.json({ quote: data });

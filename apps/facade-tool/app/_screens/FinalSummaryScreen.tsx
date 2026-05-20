@@ -63,17 +63,27 @@ export default function FinalSummaryScreen({
   }) => {
     setIsSaving(true);
     try {
+      const photos = walls
+        .filter((m) => m.imageUrl && m.storagePath)
+        .map((m) => ({
+          imageUrl: m.imageUrl!,
+          storagePath: m.storagePath!,
+          wallLabel: m.label,
+          wallAreaM2: m.areaM2,
+        }));
+
       await fetch("/api/quote", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           projectId: data.projectId || null,
-          imageUrl: null,
+          imageUrl: photos[0]?.imageUrl ?? null,
           visualizedUrl: null,
           wallAreaM2: totalArea,
           unitPrice: data.unitPrice,
           fixedCosts: data.fixedCosts,
           notes: data.notes,
+          photos,
         }),
       });
     } finally {

@@ -81,6 +81,9 @@ export default function HomePage() {
   const [imageDims, setImageDims] = useState({ w: 0, h: 0 });
   const [captureTilt, setCaptureTilt] = useState<CaptureTilt | null>(null);
   const [uploadedImageUrl, setUploadedImageUrl] = useState<string | null>(null);
+  const [uploadedStoragePath, setUploadedStoragePath] = useState<string | null>(
+    null,
+  );
   const [mlsdMapUrl, setMlsdMapUrl] = useState<string | null>(null);
   const [reference, setReference] = useState<ReferenceData | null>(null);
   const [polygon, setPolygon] = useState<PolygonData | null>(null);
@@ -117,24 +120,26 @@ export default function HomePage() {
     setImageDims({ w: 0, h: 0 });
     setCaptureTilt(null);
     setUploadedImageUrl(null);
+    setUploadedStoragePath(null);
     setMlsdMapUrl(null);
     setReference(null);
     setPolygon(null);
     setError(null);
   }, []);
 
-  /** Host the capture on Fal storage + request MLSD in the background.
-   *  Called as early as possible on wall 1 (before ref-draw) so reference
-   *  snapping has a line map; poly-intro reuses the same upload when
-   *  it completes first. */
+  /** Upload to Supabase Storage + request MLSD in the background. */
   const runUploadAndMlsdForFile = useCallback(async (file: File) => {
     try {
       const fd = new FormData();
       fd.append("file", file);
       const res = await fetch("/api/upload", { method: "POST", body: fd });
       if (!res.ok) return;
-      const { url } = await res.json();
+      const { url, path } = (await res.json()) as {
+        url: string;
+        path?: string;
+      };
       setUploadedImageUrl(url);
+      if (path) setUploadedStoragePath(path);
       try {
         const r = await fetch("/api/lines", {
           method: "POST",
@@ -248,15 +253,18 @@ export default function HomePage() {
         // Ensure we have an uploaded URL (in case the user drew faster
         // than the upload completed).
         let imgUrl = uploadedImageUrl;
+        let storagePath = uploadedStoragePath;
         if (!imgUrl && imageFile) {
           setAnalysingMessage(ANALYSING_MESSAGES.upload);
           const fd = new FormData();
           fd.append("file", imageFile);
           const res = await fetch("/api/upload", { method: "POST", body: fd });
           if (!res.ok) throw new Error("Kuvan lataaminen epäonnistui.");
-          const { url } = await res.json();
-          imgUrl = url;
-          setUploadedImageUrl(url);
+          const payload = (await res.json()) as { url: string; path?: string };
+          imgUrl = payload.url;
+          storagePath = payload.path ?? null;
+          setUploadedImageUrl(imgUrl);
+          setUploadedStoragePath(storagePath);
         }
 
         // Resolve the reference data
@@ -296,7 +304,10 @@ export default function HomePage() {
           },
         );
 
-        const updated = addMeasurement(result.wallAreaM2);
+        const updated = addMeasurement(result.wallAreaM2, {
+          imageUrl: imgUrl ?? undefined,
+          storagePath: storagePath ?? undefined,
+        });
         setProject(updated);
 
         // Persist into the project + remember the wall height for next photo.
@@ -355,6 +366,7 @@ export default function HomePage() {
     },
     [
       uploadedImageUrl,
+      uploadedStoragePath,
       imageFile,
       imageDims,
       reference,

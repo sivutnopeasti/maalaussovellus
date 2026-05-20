@@ -194,6 +194,10 @@ export interface WallMeasurement {
   areaM2: number;
   /** Timestamp. */
   measuredAt: number;
+  /** Public Supabase Storage URL for this wall photo. */
+  imageUrl?: string;
+  /** Object path inside the facade-captures bucket. */
+  storagePath?: string;
 }
 
 export interface FacadeProject {
@@ -220,16 +224,29 @@ export function getProject(): FacadeProject | null {
   return null;
 }
 
-export function addMeasurement(areaM2: number, label?: string): FacadeProject {
+export function addMeasurement(
+  areaM2: number,
+  opts?: {
+    label?: string;
+    imageUrl?: string;
+    storagePath?: string;
+  },
+): FacadeProject {
   const existing = getProject();
   const measurements = existing?.measurements ?? [];
   const finalLabel =
-    label ??
+    opts?.label ??
     (measurements.length === 0 ? "Seinä 1" : `Seinä ${measurements.length + 1}`);
   const next: FacadeProject = {
     measurements: [
       ...measurements,
-      { label: finalLabel, areaM2, measuredAt: Date.now() },
+      {
+        label: finalLabel,
+        areaM2,
+        measuredAt: Date.now(),
+        ...(opts?.imageUrl ? { imageUrl: opts.imageUrl } : {}),
+        ...(opts?.storagePath ? { storagePath: opts.storagePath } : {}),
+      },
     ],
     startedAt: existing?.startedAt ?? Date.now(),
   };

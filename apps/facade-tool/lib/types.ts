@@ -48,7 +48,7 @@ export interface CaptureTilt {
 export interface AnalysisSession {
   /** Facade outline polygon — the customer draws this manually. */
   polygon?: PolygonData;
-  /** URL in fal.ai storage — passed to AI models and used for display */
+  /** URL in Supabase Storage (facade-captures bucket). */
   uploadedImageUrl: string;
   imageWidth: number;
   imageHeight: number;
