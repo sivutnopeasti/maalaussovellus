@@ -5,6 +5,7 @@ import {
   AlertCircle,
   Check,
   Loader2,
+  Ruler,
   Smartphone,
   Target,
 } from "lucide-react";
@@ -114,6 +115,8 @@ export default function ArReferencePicker({ onResult, onBack }: Props) {
   const [xrError, setXrError] = useState<string | null>(null);
   const [capturedMeters, setCapturedMeters] = useState<number | null>(null);
   const [manualInput, setManualInput] = useState("0.9");
+
+  const [iosArOpened, setIosArOpened] = useState(false);
 
   // XR refs — live outside React state to avoid re-renders in the rAF loop
   const overlayRef = useRef<HTMLDivElement>(null);
@@ -227,6 +230,25 @@ export default function ArReferencePicker({ onResult, onBack }: Props) {
   }, [endSession]);
 
   // ── Handlers ────────────────────────────────────────────────────────────────
+
+  /**
+   * Trigger iOS AR Quick Look programmatically.
+   * The <a rel="ar"> element must have exactly one <img> child — we create
+   * it dynamically so the visible button can look however we like.
+   */
+  const handleOpenArQuickLook = useCallback(() => {
+    const a = document.createElement("a");
+    a.setAttribute("rel", "ar");
+    // #allowsContentScaling=0 locks the 1 m bar to real-world scale
+    a.href = "/ruler-1m.usdz#allowsContentScaling=0";
+    const img = document.createElement("img");
+    img.src = "/ruler-preview.svg";
+    a.appendChild(img);
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setIosArOpened(true);
+  }, []);
 
   const handleManualSubmit = useCallback(() => {
     const v = parseFloat(manualInput.replace(",", "."));
@@ -405,16 +427,49 @@ export default function ArReferencePicker({ onResult, onBack }: Props) {
           </div>
         )}
 
-        {/* iOS instructions */}
+        {/* iOS — AR Quick Look */}
         {platform === "ios" && (
-          <div className="rounded-2xl bg-slate-50 border border-slate-200 p-4 space-y-1.5">
-            <p className="font-semibold text-sm text-slate-900">
-              iPhone: käytä Mitta-sovellusta
-            </p>
-            <p className="text-xs text-slate-600 leading-relaxed">
-              Avaa iPhonen sisäinen <strong>Mitta</strong>-sovellus ja mittaa oven
-              tai ikkunan leveys. Syötä tulos alla.
-            </p>
+          <div className="rounded-2xl bg-blue-50 border border-blue-200 p-4 space-y-3">
+            <div className="flex items-center gap-2">
+              <Ruler className="w-5 h-5 text-blue-600 shrink-0" />
+              <p className="font-semibold text-sm text-blue-900">
+                AR-referenssimitta (AR Quick Look)
+              </p>
+            </div>
+
+            {!iosArOpened ? (
+              <>
+                <ol className="space-y-1 text-xs text-blue-800 leading-relaxed list-decimal list-inside">
+                  <li>Napauta alla "Avaa AR-mittari"</li>
+                  <li>Safari avaa natiivi AR-näkymän — sininen 1 m viiva ilmestyy seinälle</li>
+                  <li>Aseta viiva oven tai ikkunan yhteyteen</li>
+                  <li>Arvioi aukon leveys suhteessa viivaan ja syötä alla</li>
+                </ol>
+                <button
+                  onClick={handleOpenArQuickLook}
+                  className="w-full py-3 rounded-xl bg-blue-600 text-white font-bold text-sm flex items-center justify-center gap-2 active:scale-[0.98] transition-transform"
+                >
+                  <Ruler className="w-4 h-4" />
+                  Avaa AR-mittari (1 m)
+                </button>
+              </>
+            ) : (
+              <div className="space-y-2">
+                <p className="text-xs text-blue-700 leading-relaxed">
+                  Hyvä! Sait 1 m referenssiviivan näkyviin. Syötä nyt
+                  aukon leveys alle tai avaa AR uudelleen.
+                </p>
+                <button
+                  onClick={() => {
+                    setIosArOpened(false);
+                    handleOpenArQuickLook();
+                  }}
+                  className="w-full py-2 rounded-lg border border-blue-300 text-blue-700 text-xs font-semibold"
+                >
+                  Avaa AR uudelleen
+                </button>
+              </div>
+            )}
           </div>
         )}
 

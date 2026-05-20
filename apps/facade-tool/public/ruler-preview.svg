@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="400" height="200" viewBox="0 0 400 200">
+  <rect width="400" height="200" fill="#0f172a"/>
+  <rect x="40" y="80" width="320" height="40" rx="6" fill="#3b82f6"/>
+  <!-- tick marks -->
+  <rect x="40"  y="80" width="3" height="20" fill="white" opacity="0.9"/>
+  <rect x="120" y="88" width="2" height="12" fill="white" opacity="0.7"/>
+  <rect x="200" y="80" width="2" height="20" fill="white" opacity="0.9"/>
+  <rect x="280" y="88" width="2" height="12" fill="white" opacity="0.7"/>
+  <rect x="360" y="80" width="3" height="20" fill="white" opacity="0.9"/>
+  <!-- label -->
+  <text x="200" y="148" text-anchor="middle" font-family="system-ui,sans-serif" font-size="18" font-weight="700" fill="white">1 metri</text>
+  <text x="200" y="168" text-anchor="middle" font-family="system-ui,sans-serif" font-size="12" fill="#94a3b8">AR-referenssimitta</text>
+</svg>
