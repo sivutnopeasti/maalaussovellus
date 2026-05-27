@@ -29,6 +29,7 @@ interface Props {
 }
 
 type Phase = "point1" | "point2" | "input";
+type Orientation = "horizontal" | "vertical";
 
 /** Same fraction as polygon line snap — nearest edge within ~5% of diag. */
 const LINE_SNAP_RADIUS_FRACTION = 0.05;
@@ -49,6 +50,7 @@ export default function ReferenceMeasure({
   const imageRef = useRef<HTMLImageElement | null>(null);
   const { lineMapRef, status: mlsdStatus, ready: mlsdReady } =
     useMlsdLineMap(mlsdMapUrl);
+  const [orientation, setOrientation] = useState<Orientation>("horizontal");
   const [phase, setPhase] = useState<Phase>("point1");
   const [points, setPoints] = useState<Point[]>([]);
   const [meters, setMeters] = useState("");
@@ -119,10 +121,10 @@ export default function ReferenceMeasure({
   const srcW = imageWidth > 0 ? imageWidth : imgDims.w;
   const srcH = imageHeight > 0 ? imageHeight : imgDims.h;
 
-  /** Snap raw coords to nearest MLSD line; second endpoint is forced to
-   *  the same y as `anchorY` so the reference is always horizontal. */
+  /** Snap raw coords to nearest MLSD line; second endpoint is constrained
+   *  to the same row (horizontal) or column (vertical) as the first. */
   const applyRefPoint = useCallback(
-    (raw: Point, which: 0 | 1, anchorY?: number): Point => {
+    (raw: Point, which: 0 | 1, anchor?: number): Point => {
       const w = imgDims.w;
       const h = imgDims.h;
       if (w <= 0 || h <= 0) return raw;
@@ -134,25 +136,22 @@ export default function ReferenceMeasure({
         const lm = lineMapRef.current;
         const diag = Math.hypot(srcW, srcH);
         const r = diag * LINE_SNAP_RADIUS_FRACTION;
-        const snapped = snapToNearestLine(
-          p,
-          lm,
-          r,
-          lm.width / srcW,
-          lm.height / srcH,
-        );
+        const snapped = snapToNearestLine(p, lm, r, lm.width / srcW, lm.height / srcH);
         if (snapped) p = snapped;
       }
 
-      if (which === 1 && anchorY !== undefined) {
-        p = {
-          x: Math.max(0, Math.min(w - 1, p.x)),
-          y: Math.max(0, Math.min(h - 1, anchorY)),
-        };
+      if (which === 1 && anchor !== undefined) {
+        if (orientation === "horizontal") {
+          // Lock second point to same Y row
+          p = { x: Math.max(0, Math.min(w - 1, p.x)), y: Math.max(0, Math.min(h - 1, anchor)) };
+        } else {
+          // Lock second point to same X column
+          p = { x: Math.max(0, Math.min(w - 1, anchor)), y: Math.max(0, Math.min(h - 1, p.y)) };
+        }
       }
       return p;
     },
-    [imgDims.h, imgDims.w, srcW, srcH],
+    [imgDims.h, imgDims.w, srcW, srcH, orientation],
   );
 
   // ── Drawing ────────────────────────────────────────────────────────
@@ -172,38 +171,52 @@ export default function ReferenceMeasure({
     const sx = (p: Point) => p.x * scale;
     const sy = (p: Point) => p.y * scale;
 
-    // Translucent fill in image space — spans the opening quadrilateral
-    // between the two endpoints and scales correctly when zooming in.
+    // Translucent fill around the reference line
     if (points.length >= 2) {
       const p0 = points[0];
       const p1 = points[1];
-      const xL = Math.min(p0.x, p1.x);
-      const xR = Math.max(p0.x, p1.x);
-      const yM = (p0.y + p1.y) / 2;
-      const spanImg = xR - xL;
-      const halfLenImg = Math.max(
-        spanImg * 0.45,
-        Math.min(srcW, srcH) * 0.022,
-      );
-
-      const left = xL * scale;
-      const top = (yM - halfLenImg) * scale;
-      const width = spanImg * scale;
-      const height = 2 * halfLenImg * scale;
-
-      if (width > 0 && height > 0) {
-        ctx.save();
-        ctx.beginPath();
-        ctx.rect(left, top, width, height);
-
-        const grad = ctx.createLinearGradient(0, top, 0, top + height);
-        grad.addColorStop(0, "rgba(59, 130, 246, 0.14)");
-        grad.addColorStop(0.5, "rgba(96, 165, 250, 0.34)");
-        grad.addColorStop(1, "rgba(59, 130, 246, 0.14)");
-        ctx.fillStyle = grad;
-        ctx.fill();
-        ctx.restore();
+      ctx.save();
+      ctx.beginPath();
+      if (orientation === "horizontal") {
+        const xL = Math.min(p0.x, p1.x);
+        const xR = Math.max(p0.x, p1.x);
+        const yM = (p0.y + p1.y) / 2;
+        const spanImg = xR - xL;
+        const halfH = Math.max(spanImg * 0.45, Math.min(srcW, srcH) * 0.022);
+        const left = xL * scale;
+        const top = (yM - halfH) * scale;
+        const width = spanImg * scale;
+        const height = 2 * halfH * scale;
+        if (width > 0 && height > 0) {
+          ctx.rect(left, top, width, height);
+          const grad = ctx.createLinearGradient(0, top, 0, top + height);
+          grad.addColorStop(0, "rgba(59, 130, 246, 0.14)");
+          grad.addColorStop(0.5, "rgba(96, 165, 250, 0.34)");
+          grad.addColorStop(1, "rgba(59, 130, 246, 0.14)");
+          ctx.fillStyle = grad;
+          ctx.fill();
+        }
+      } else {
+        const yT = Math.min(p0.y, p1.y);
+        const yB = Math.max(p0.y, p1.y);
+        const xM = (p0.x + p1.x) / 2;
+        const spanImg = yB - yT;
+        const halfW = Math.max(spanImg * 0.45, Math.min(srcW, srcH) * 0.022);
+        const top = yT * scale;
+        const left = (xM - halfW) * scale;
+        const width = 2 * halfW * scale;
+        const height = spanImg * scale;
+        if (width > 0 && height > 0) {
+          ctx.rect(left, top, width, height);
+          const grad = ctx.createLinearGradient(left, 0, left + width, 0);
+          grad.addColorStop(0, "rgba(59, 130, 246, 0.14)");
+          grad.addColorStop(0.5, "rgba(96, 165, 250, 0.34)");
+          grad.addColorStop(1, "rgba(59, 130, 246, 0.14)");
+          ctx.fillStyle = grad;
+          ctx.fill();
+        }
       }
+      ctx.restore();
     }
 
     // Connecting line between the two endpoints — brand blue + soft glow.
@@ -235,21 +248,26 @@ export default function ReferenceMeasure({
       const halfLen = viewport.dotRadius(active ? 18 : 14);
       const tickWidth = viewport.strokeWidth(active ? 3 : 2);
 
+      // Tick perpendicular to the reference line direction
+      const [tx0, ty0, tx1, ty1] = orientation === "horizontal"
+        ? [cx, cy - halfLen, cx, cy + halfLen]   // vertical tick for H-line
+        : [cx - halfLen, cy, cx + halfLen, cy];  // horizontal tick for V-line
+
       // White outline so the tick remains visible on every photo.
       ctx.strokeStyle = "#FFFFFF";
       ctx.lineWidth = tickWidth + viewport.strokeWidth(2);
       ctx.lineCap = "round";
       ctx.beginPath();
-      ctx.moveTo(cx, cy - halfLen);
-      ctx.lineTo(cx, cy + halfLen);
+      ctx.moveTo(tx0, ty0);
+      ctx.lineTo(tx1, ty1);
       ctx.stroke();
 
       // Brand-coloured tick on top.
       ctx.strokeStyle = active ? BRAND_BLUE_ACTIVE : BRAND_BLUE;
       ctx.lineWidth = tickWidth;
       ctx.beginPath();
-      ctx.moveTo(cx, cy - halfLen);
-      ctx.lineTo(cx, cy + halfLen);
+      ctx.moveTo(tx0, ty0);
+      ctx.lineTo(tx1, ty1);
       ctx.stroke();
 
       // Small centre handle so the user knows the tick is interactive.
@@ -296,8 +314,11 @@ export default function ReferenceMeasure({
 
     // Optional length label, rendered once the user has entered a value.
     if (points.length >= 2 && meters) {
-      const mx = (sx(points[0]) + sx(points[1])) / 2;
-      const my = (sy(points[0]) + sy(points[1])) / 2 - viewport.dotRadius(22);
+      const midX = (sx(points[0]) + sx(points[1])) / 2;
+      const midY = (sy(points[0]) + sy(points[1])) / 2;
+      // For horizontal: label above midpoint. For vertical: label to the right.
+      const mx = orientation === "horizontal" ? midX : midX + viewport.dotRadius(22);
+      const my = orientation === "horizontal" ? midY - viewport.dotRadius(22) : midY;
       const fontPx = viewport.strokeWidth(14);
       const label = `${meters} m`;
 
@@ -404,13 +425,14 @@ export default function ReferenceMeasure({
             const p = applyRefPoint({ x, y }, 0);
             next[0] = p;
             if (next.length >= 2) {
-              next[1] = {
-                x: next[1].x,
-                y: p.y,
-              };
+              // Keep the non-locked axis of point 1 unchanged
+              next[1] = orientation === "horizontal"
+                ? { x: next[1].x, y: p.y }
+                : { x: p.x, y: next[1].y };
             }
           } else {
-            next[1] = applyRefPoint({ x, y }, 1, next[0].y);
+            const anchor = orientation === "horizontal" ? next[0].y : next[0].x;
+            next[1] = applyRefPoint({ x, y }, 1, anchor);
           }
           return next;
         });
@@ -526,26 +548,16 @@ export default function ReferenceMeasure({
       if (hitTest(img) !== null) return;
 
       if (phase === "point1") {
-        if (mlsdReady && lineMapRef.current) {
+        // MLSD auto-detection only for horizontal orientation
+        if (orientation === "horizontal" && mlsdReady && lineMapRef.current) {
           const span =
-            inferOpeningFromInteriorClick(
-              img,
-              lineMapRef.current,
-              srcW,
-              srcH,
-            ) ??
-            inferOpeningWidthFromMlsd(
-              img,
-              lineMapRef.current,
-              srcW,
-              srcH,
-            );
+            inferOpeningFromInteriorClick(img, lineMapRef.current, srcW, srcH) ??
+            inferOpeningWidthFromMlsd(img, lineMapRef.current, srcW, srcH);
           if (span) {
             const left = applyRefPoint(span.left, 0);
             const right = applyRefPoint(span.right, 1, left.y);
             const dist = Math.hypot(right.x - left.x, right.y - left.y);
-            const minW = Math.min(srcW, srcH) * 0.015;
-            if (dist >= minW) {
+            if (dist >= Math.min(srcW, srcH) * 0.015) {
               setPoints([left, right]);
               setPhase("input");
               return;
@@ -557,7 +569,8 @@ export default function ReferenceMeasure({
         setPhase("point2");
       } else {
         setPoints((prev) => {
-          const p = applyRefPoint(img, 1, prev[0].y);
+          const anchor = orientation === "horizontal" ? prev[0].y : prev[0].x;
+          const p = applyRefPoint(img, 1, anchor);
           return [prev[0], p];
         });
         setPhase("input");
@@ -608,31 +621,75 @@ export default function ReferenceMeasure({
               ? "cursor-grab"
               : "cursor-default";
 
+  const switchOrientation = (o: Orientation) => {
+    if (o === orientation) return;
+    setOrientation(o);
+    setPoints([]);
+    setMeters("");
+    setPhase("point1");
+    setDraggingIdx(null);
+    setHoverIdx(null);
+    viewport.reset();
+  };
+
   return (
     <div className="flex flex-col h-full min-h-0 gap-2">
-      {/* Compact one-line phase prompt. Long-form guidance lives in the
-          page header's "Ohjeet" button. */}
-      <div className="flex items-center gap-2 text-sm shrink-0">
-        <Ruler className="w-4 h-4 text-blue-600 shrink-0" />
-        {phase === "point1" && (
-          <span className="text-blue-700 font-medium">
-            <strong>Napauta oven tai ikkunan sisään</strong> — vaakaviiva
-            syntyy automaattisesti. Tarvittaessa{" "}
-            <strong>Aloita alusta</strong> vasemmassa yläkulmassa. Jos
-            tunnistus epäonnistuu: kaksi napautusta (alku → loppu).
-          </span>
-        )}
-        {phase === "point2" && (
-          <span className="text-blue-700 font-medium">
-            Aseta <strong>loppupiste</strong> — viiva pysyy vaakasuorana.
-            Raahaa pisteitä tarkentaaksesi. Zoomaa +/- -napeilla.
-          </span>
-        )}
-        {phase === "input" && (
-          <span className="text-green-700 font-medium">
-            Syötä aukon leveys metreissä (esim. ovi 0,9).
-          </span>
-        )}
+      {/* Orientation toggle + phase prompt */}
+      <div className="flex items-start gap-2 shrink-0">
+        {/* Vaaka / Pysty toggle */}
+        <div className="flex rounded-lg border border-slate-200 overflow-hidden shrink-0 text-xs font-semibold">
+          <button
+            onClick={() => switchOrientation("horizontal")}
+            className={`px-2.5 py-1.5 transition-colors ${
+              orientation === "horizontal"
+                ? "bg-blue-600 text-white"
+                : "bg-white text-slate-600 hover:bg-slate-50"
+            }`}
+          >
+            — Vaaka
+          </button>
+          <button
+            onClick={() => switchOrientation("vertical")}
+            className={`px-2.5 py-1.5 border-l border-slate-200 transition-colors ${
+              orientation === "vertical"
+                ? "bg-blue-600 text-white"
+                : "bg-white text-slate-600 hover:bg-slate-50"
+            }`}
+          >
+            | Pysty
+          </button>
+        </div>
+
+        <div className="flex items-center gap-1.5 text-sm flex-1 min-w-0">
+          <Ruler className="w-4 h-4 text-blue-600 shrink-0" />
+          {phase === "point1" && orientation === "horizontal" && (
+            <span className="text-blue-700 font-medium">
+              <strong>Napauta oven tai ikkunan sisään</strong> — vaakaviiva syntyy automaattisesti.
+              Jos ei onnistu: kaksi napautusta (alku → loppu).
+            </span>
+          )}
+          {phase === "point1" && orientation === "vertical" && (
+            <span className="text-blue-700 font-medium">
+              Napauta referenssiviivan <strong>yläpiste</strong> (esim. oven yläreuna).
+            </span>
+          )}
+          {phase === "point2" && orientation === "horizontal" && (
+            <span className="text-blue-700 font-medium">
+              Aseta <strong>loppupiste</strong> — viiva pysyy vaakasuorana.
+            </span>
+          )}
+          {phase === "point2" && orientation === "vertical" && (
+            <span className="text-blue-700 font-medium">
+              Aseta <strong>alapiste</strong> — viiva pysyy pystysuorana.
+            </span>
+          )}
+          {phase === "input" && (
+            <span className="text-green-700 font-medium">
+              Syötä {orientation === "horizontal" ? "leveys" : "korkeus"} metreissä
+              {orientation === "horizontal" ? " (esim. ovi 0,9)" : " (esim. ovi 2,1)"}.
+            </span>
+          )}
+        </div>
       </div>
 
       {/* Main canvas — visible only after MLSD line map is ready */}
