@@ -27,6 +27,7 @@ import {
   storeWallHeight,
   type FacadeProject,
 } from "@/lib/wallHeight";
+import { getStoredFocalRatio } from "@/lib/phoneModels";
 import IntroScreen from "../_screens/IntroScreen";
 import InstructionModal from "../_screens/InstructionModal";
 import AnalysingScreen from "../_screens/AnalysingScreen";
@@ -310,6 +311,7 @@ export default function HomePage() {
           {
             useKeystoneCorrection: true,
             sensorTiltBetaDeg: captureTilt?.cameraTiltDeg ?? null,
+            focalRatio: getStoredFocalRatio(),
           },
         );
 

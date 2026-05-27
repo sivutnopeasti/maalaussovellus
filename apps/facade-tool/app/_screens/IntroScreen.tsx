@@ -1,7 +1,15 @@
 "use client";
 
-import { Camera, Trash2 } from "lucide-react";
+import { useState, useEffect } from "react";
+import { Camera, Trash2, Settings } from "lucide-react";
+import dynamic from "next/dynamic";
 import type { FacadeProject } from "@/lib/wallHeight";
+import { getStoredPhoneModel, type PhoneModel } from "@/lib/phoneModels";
+
+const PhoneModelPicker = dynamic(
+  () => import("@/components/PhoneModelPicker"),
+  { ssr: false },
+);
 
 interface Props {
   project: FacadeProject | null;
@@ -22,20 +30,59 @@ export default function IntroScreen({
   const wallCount = project?.measurements.length ?? 0;
   const hasProject = wallCount > 0;
 
+  const [phoneModel, setPhoneModel] = useState<PhoneModel | null>(null);
+  const [showPicker, setShowPicker] = useState(false);
+
+  useEffect(() => {
+    setPhoneModel(getStoredPhoneModel());
+  }, []);
+
+  const handleModelSaved = (model: PhoneModel) => {
+    setPhoneModel(model);
+  };
+
   return (
     <div className="absolute inset-0 flex flex-col bg-gradient-to-br from-slate-50 via-white to-blue-50">
-      <div className="pt-8 pb-4 px-6 text-center">
-        <div className="mx-auto w-20 h-20 rounded-2xl bg-gradient-to-br from-blue-500 to-blue-700 flex items-center justify-center shadow-xl shadow-blue-200">
+      {/* Top bar */}
+      <div className="flex items-center justify-between px-5 pt-6 pb-2">
+        <div className="w-10" />
+        <div className="mx-auto w-16 h-16 rounded-2xl bg-gradient-to-br from-blue-500 to-blue-700 flex items-center justify-center shadow-xl shadow-blue-200">
           <HouseIcon />
         </div>
-        <h1 className="mt-4 text-2xl font-extrabold text-slate-900 leading-tight">
+        <button
+          onClick={() => setShowPicker(true)}
+          className="w-10 h-10 flex items-center justify-center rounded-full hover:bg-slate-100 text-slate-400 hover:text-slate-700 transition-colors"
+          title="Asetukset — puhelinmalli"
+          aria-label="Asetukset"
+        >
+          <Settings className="w-5 h-5" />
+        </button>
+      </div>
+
+      <div className="px-6 pb-3 text-center">
+        <h1 className="mt-2 text-2xl font-extrabold text-slate-900 leading-tight">
           Laske kohteen pinta-ala
           <br />
           <span className="text-blue-600">kentällä — sekunnissa</span>
         </h1>
         <p className="mt-2 text-sm text-slate-600 px-2">
-          Ota kuva jokaisesta seinästä — sovellus laskee neliömetrit tarjouslaskentaa varten.
+          Ota kuva jokaisesta seinästä — sovellus laskee neliömetrit
+          tarjouslaskentaa varten.
         </p>
+
+        {/* Phone model badge */}
+        <button
+          onClick={() => setShowPicker(true)}
+          className="mt-2 inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium border transition-colors"
+          style={
+            phoneModel
+              ? { borderColor: "#bfdbfe", color: "#1d4ed8", background: "#eff6ff" }
+              : { borderColor: "#e2e8f0", color: "#94a3b8", background: "#f8fafc" }
+          }
+        >
+          <Settings className="w-3 h-3" />
+          {phoneModel ? phoneModel.name : "Valitse puhelinmalli (suositeltava)"}
+        </button>
       </div>
 
       <div className="flex-1 px-5 pb-3 overflow-hidden">
@@ -81,6 +128,13 @@ export default function IntroScreen({
           </button>
         )}
       </div>
+
+      {showPicker && (
+        <PhoneModelPicker
+          onClose={() => setShowPicker(false)}
+          onSaved={handleModelSaved}
+        />
+      )}
     </div>
   );
 }
@@ -102,8 +156,8 @@ function Step({ n, title, body }: { n: number; title: string; body: string }) {
 function HouseIcon() {
   return (
     <svg
-      width="40"
-      height="40"
+      width="34"
+      height="34"
       viewBox="0 0 24 24"
       fill="none"
       stroke="white"

@@ -39,7 +39,13 @@ export interface PreciseMeasurementResult {
   method: "basic" | "keystone";
 }
 
-const ASSUMED_FOCAL_RATIO = 0.85;
+/**
+ * Default focal ratio used when no phone model is selected.
+ * Corresponds to a 24 mm–equivalent lens (f_ratio = 24/24 = 1.0),
+ * which is a reasonable neutral value for modern smartphone main cameras.
+ * Previously 0.85 (~20 mm equiv, too wide — caused systematic under-correction).
+ */
+const DEFAULT_FOCAL_RATIO = 1.0;
 
 export async function calculatePolygonMeasurement(
   polygonPoints: Point[],
@@ -52,11 +58,19 @@ export async function calculatePolygonMeasurement(
     /** Camera tilt β (°) measured by gyroscope at capture time. The only
      *  source for keystone correction now. */
     sensorTiltBetaDeg?: number | null;
+    /**
+     * Pixel focal length as a fraction of imageHeight.
+     * Derive from a phone model: focalRatio = f35mmEquiv / 24
+     * (vertical 35 mm sensor = 24 mm).
+     * Defaults to DEFAULT_FOCAL_RATIO (1.0 ≈ 24 mm equiv).
+     */
+    focalRatio?: number | null;
   },
 ): Promise<PreciseMeasurementResult> {
   const ppm = reference.pixelsPerMeter;
   const useKeystone = options?.useKeystoneCorrection ?? true;
   const sensorBeta = options?.sensorTiltBetaDeg ?? null;
+  const focalRatio = options?.focalRatio ?? DEFAULT_FOCAL_RATIO;
 
   // ── 1. Vertical keystone from gyroscope tilt ─────────────────────────────
   let verticalTiltSource: PreciseMeasurementResult["verticalTiltSource"] = "none";
@@ -71,7 +85,7 @@ export async function calculatePolygonMeasurement(
   // v_v = -f / tan(β) where β is the camera tilt (positive = tilted up).
   let vyOffset: number | null = null;
   if (verticalTiltSource === "sensor" && tiltBetaDeg !== null) {
-    const f = ASSUMED_FOCAL_RATIO * imageHeight;
+    const f = focalRatio * imageHeight;
     const tanB = Math.tan((Math.abs(tiltBetaDeg) * Math.PI) / 180);
     if (tanB > 0.001) {
       vyOffset = (tiltBetaDeg > 0 ? -1 : 1) * (f / tanB);
@@ -106,7 +120,7 @@ export async function calculatePolygonMeasurement(
     // Per-pixel keystone weighting
     const vv = vyOffset;
     // cos(β) for the global cos factor in dA. Tiny correction at small β.
-    const f = ASSUMED_FOCAL_RATIO * imageHeight;
+    const f = focalRatio * imageHeight;
     const cosBeta = Math.abs(vv) / Math.sqrt(vv * vv + f * f);
     // Constant factor (v_v − v_ref)² / cos(β) — absorbed into a normalisation
     // that we divide out below by dividing by the weight at v_ref. Simpler:
@@ -192,7 +206,7 @@ export async function calculatePolygonMeasurement(
 
   // Same global cos(β) factor for openings if keystone correction is active
   if (vyOffset !== null && Math.abs(vyOffset) > imageHeight * 0.15) {
-    const f = ASSUMED_FOCAL_RATIO * imageHeight;
+    const f = focalRatio * imageHeight;
     const cosBeta = Math.abs(vyOffset) / Math.sqrt(vyOffset * vyOffset + f * f);
     openingPixelsScaled /= cosBeta;
   }
