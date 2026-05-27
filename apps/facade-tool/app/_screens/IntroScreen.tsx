@@ -29,12 +29,12 @@ export default function IntroScreen({
           <HouseIcon />
         </div>
         <h1 className="mt-4 text-2xl font-extrabold text-slate-900 leading-tight">
-          Mittaa talosi seinät
+          Laske kohteen pinta-ala
           <br />
-          <span className="text-blue-600">muutamassa minuutissa</span>
+          <span className="text-blue-600">kentällä — sekunnissa</span>
         </h1>
         <p className="mt-2 text-sm text-slate-600 px-2">
-          Ota kuvat seinistä — sovellus laskee neliömetrit ja muodostaa tarjouksen.
+          Ota kuva jokaisesta seinästä — sovellus laskee neliömetrit tarjouslaskentaa varten.
         </p>
       </div>
 
@@ -42,18 +42,18 @@ export default function IntroScreen({
         <ol className="space-y-2.5">
           <Step
             n={1}
-            title="Ota kuva seinästä"
-            body="Asetu suoraan seinän eteen. Vesivaaka (vaakaviiva) vihertää kun puhelin on suorassa. iPhonella: napauta Aktivoi vesivaaka kerran."
+            title="Kuvaa seinä kohtisuoraan"
+            body="Asetu suoraan seinän eteen — koko seinä kuvaan. Vesivaaka vihertää kun puhelin on suorassa. iPhonella: napauta Aktivoi vesivaaka kerran."
           />
           <Step
             n={2}
             title="Referenssimitta (vain 1. seinä)"
-            body="Napauta oven tai ikkunan sisään — viiva syntyy automaattisesti. Syötä aukon leveys (esim. 0,9 m). Seuraavilla seinillä mittakaava tulee automaattisesti."
+            body="Napauta oven tai ikkunan reunaan — viiva syntyy automaattisesti. Syötä aukon leveys (esim. ovi = 0,9 m). Seuraavilla seinillä mittakaava siirtyy automaattisesti."
           />
           <Step
             n={3}
-            title="Rajaa nurkat"
-            body="Klikkaa vähintään kolme ulkonurkaa. Sovellus kiinnittyy reunaan ja valitsee ulomman nurkan. Zoomaa tarvittaessa."
+            title="Rajaa maalattava alue"
+            body="Napauta seinän nurkat — sovellus kiinnittyy reunoihin automaattisesti. Vähennä ikkunat ja ovet tarvittaessa. Neliöt lasketaan heti."
           />
         </ol>
       </div>
@@ -61,7 +61,7 @@ export default function IntroScreen({
       <div className="px-5 pb-6 pt-3 space-y-2">
         {hasProject && (
           <div className="text-center text-xs text-slate-500 mb-1">
-            Sinulla on kesken {wallCount} mitattua seinää.
+            Kohde kesken — {wallCount} seinää mitattu.
           </div>
         )}
         <button
@@ -69,7 +69,7 @@ export default function IntroScreen({
           className="w-full py-4 rounded-2xl bg-gradient-to-br from-blue-500 to-blue-600 hover:from-blue-600 hover:to-blue-700 text-white font-bold text-base shadow-xl shadow-blue-200 flex items-center justify-center gap-2 active:scale-[0.98] transition-transform"
         >
           <Camera className="w-5 h-5" />
-          {hasProject ? "Jatka — avaa kamera" : "Avaa kamera ja ota kuvat"}
+          {hasProject ? "Jatka mittausta" : "Aloita laskenta — avaa kamera"}
         </button>
         {hasProject && (
           <button

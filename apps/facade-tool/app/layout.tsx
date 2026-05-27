@@ -8,9 +8,9 @@ const geist = Geist({
 });
 
 export const metadata: Metadata = {
-  title: "Maalausliike — Mittaa & hae tarjous",
+  title: "Pinta-alalaskuri — maalausmyyjän työkalu",
   description:
-    "Mittaa julkisivun pinta-ala kameralla ja hae tarjous muutamassa minuutissa.",
+    "Laske julkisivun seinäpinta-ala kameralla kentällä — referenssimitta, polygoni ja neliöt sekunnissa.",
 };
 
 /**

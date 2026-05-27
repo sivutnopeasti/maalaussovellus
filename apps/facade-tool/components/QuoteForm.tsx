@@ -134,13 +134,13 @@ export default function QuoteForm({
 
       <div>
         <label className="block text-xs font-medium text-slate-600 mb-1">
-          Projekti-ID (valinnainen)
+          Kohteen osoite tai nimi (valinnainen)
         </label>
         <input
           type="text"
           {...register("projectId")}
-          placeholder="UUID olemassa olevasta projektista"
-          className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
+          placeholder="Esim. Mäkitie 3, Tampere"
+          className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
         />
       </div>
 
