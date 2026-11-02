@@ -1,5 +1,7 @@
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { aiConfig } from './ai.mjs';
+import { createMailer, resolveSmtpConfig } from './mail.mjs';
 import { DEFAULT_THRESHOLDS } from './score.mjs';
 import { defaultDeps, processFile } from './run.mjs';
 
@@ -16,6 +18,7 @@ export function readOptions(argv, env = process.env) {
       i += 1;
     }
   }
+  if (args.get('mail-provider')) env = { ...env, MAIL_PROVIDER: args.get('mail-provider') };
   const outDir = path.resolve(args.get('out') || 'out');
   return {
     csvPath: args.get('csv') || '',
@@ -28,6 +31,9 @@ export function readOptions(argv, env = process.env) {
     fromName: env.OUTREACH_FROM_NAME || '',
     fromEmail: env.OUTREACH_FROM_EMAIL || '',
     postalAddress: env.OUTREACH_POSTAL_ADDRESS || '',
+    ai: aiConfig(env),
+    smtp: resolveSmtpConfig(env),
+    env,
     thresholds: {
       minFollowers: numberEnv(env.MIN_FOLLOWERS, DEFAULT_THRESHOLDS.minFollowers),
       minMedianLikes: numberEnv(env.MIN_MEDIAN_LIKES, DEFAULT_THRESHOLDS.minMedianLikes),
@@ -44,42 +50,26 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     process.exitCode = 1;
     return;
   }
-  if (options.send && !env.SMTP_HOST) {
-    console.error('SMTP_HOST puuttuu. Viestejä ei lähetetty.');
+  if (options.send && !options.smtp.host) {
+    console.error('SMTP puuttuu. Aseta MAIL_PROVIDER=gmail (tai brevo) tai SMTP_HOST.');
     process.exitCode = 1;
     return;
   }
-  const deliver = options.send ? await createMailer(env) : async () => {};
+  const deliver = options.send ? await createMailer(options.env) : async () => {};
   const results = await processFile({
     csvPath: options.csvPath,
     outDir: options.outDir,
     options,
-    deps: defaultDeps(env),
+    deps: defaultDeps(options.env),
     deliver,
   });
   const weak = results.filter((row) => row.decision === 'weak').length;
   console.log(`Valmis. ${results.length} yritystä, heikko some ${weak}. Tulos: ${path.join(options.outDir, 'tulokset.csv')}`);
-  if (!options.send) console.log('Viestejä ei lähetetty. Lisää --send, kun SMTP ja lähettäjän postiosoite on asetettu.');
-}
-
-async function createMailer(env) {
-  const nodemailer = await import('nodemailer');
-  const port = Number(env.SMTP_PORT || 587);
-  const transporter = nodemailer.createTransport({
-    host: env.SMTP_HOST,
-    port,
-    secure: env.SMTP_SECURE === 'true' || port === 465,
-    auth: env.SMTP_USER ? { user: env.SMTP_USER, pass: env.SMTP_PASS || '' } : undefined,
-  });
-  return (message) => transporter.sendMail({
-    from: `"${env.OUTREACH_FROM_NAME}" <${env.OUTREACH_FROM_EMAIL}>`,
-    to: message.to,
-    replyTo: env.OUTREACH_FROM_EMAIL,
-    subject: message.subject,
-    text: message.text,
-    html: message.html,
-    headers: message.headers,
-  });
+  if (!options.send) {
+    console.log('Viestejä ei lähetetty. Ilmainen lähetys: MAIL_PROVIDER=gmail ja --send.');
+  }
+  if (options.ai.enabled) console.log(`AI käytössä (${options.ai.model} @ ${options.ai.baseUrl}).`);
+  else console.log('AI pois päältä. Lisää AI_API_KEY vain jos haluat kahvaehdotuksia tai viestin hiontaa.');
 }
 
 function numberEnv(value, fallback) {

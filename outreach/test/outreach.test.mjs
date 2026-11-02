@@ -3,7 +3,10 @@ import { mkdtemp, readFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import { parseHandleList } from '../src/ai.mjs';
 import { normalizeBusinessId, parseCsv, rowFromRecord } from '../src/csv.mjs';
+import { handleCandidatesFromName, profileMatchesCompany } from '../src/handles.mjs';
+import { resolveSmtpConfig } from '../src/mail.mjs';
 import { assessPresence } from '../src/score.mjs';
 import { findInstagram, pickEmail } from '../src/sources.mjs';
 import { evaluateCompany, processFile } from '../src/run.mjs';
@@ -164,6 +167,60 @@ test('message names the company and the form', () => {
   assert.match(message.subject, /Esimerkki Oy/);
   assert.match(message.text, /40 seuraajaa/);
   assert.match(message.text, /ugcsuomi\.fi\/ilmoita-kampanjasta-sisallontuottajille/);
+});
+
+test('gmail preset fills free SMTP settings', () => {
+  const smtp = resolveSmtpConfig({ MAIL_PROVIDER: 'gmail', SMTP_USER: 'a@gmail.com', SMTP_PASS: 'x' });
+  assert.equal(smtp.host, 'smtp.gmail.com');
+  assert.equal(smtp.port, 587);
+});
+
+test('handle candidates stay free and require a company match', () => {
+  assert.ok(handleCandidatesFromName('Esimerkki Oy').includes('esimerkki'));
+  assert.equal(
+    profileMatchesCompany(
+      { username: 'esimerkki', fullName: 'Esimerkki', externalUrl: 'https://esimerkki.fi' },
+      { name: 'Esimerkki Oy', website: 'https://www.esimerkki.fi' },
+    ),
+    true,
+  );
+  assert.equal(
+    profileMatchesCompany(
+      { username: 'randomfood', fullName: 'Food Blog', externalUrl: 'https://muu.fi' },
+      { name: 'Esimerkki Oy', website: 'https://esimerkki.fi' },
+    ),
+    false,
+  );
+});
+
+test('AI handle parsing accepts a JSON array', () => {
+  assert.deepEqual(parseHandleList('["esimerkki","esimerkkioy"]'), ['esimerkki', 'esimerkkioy']);
+});
+
+test('name-based Instagram discovery verifies the public profile', async () => {
+  const result = await evaluateCompany(
+    { name: 'Esimerkki Oy', businessId: '1234567-8', website: '', email: '', instagram: '' },
+    {
+      lookupCompany: async () => ({ name: 'Esimerkki Oy', website: 'https://esimerkki.fi', naturalPerson: false, dissolved: false }),
+      fetchSite: async () => ({ ok: true, instagram: '', email: 'info@esimerkki.fi', pageText: 'Tervetuloa' }),
+      fetchInstagram: async (username) => {
+        if (username !== 'esimerkki') throw new Error('ei');
+        return {
+          username: 'esimerkki',
+          fullName: 'Esimerkki Oy',
+          followers: 40,
+          externalUrl: 'https://esimerkki.fi',
+          posts: [{ likes: 1, comments: 0, views: null, isVideo: false }],
+          businessEmail: '',
+        };
+      },
+      fetchAds: async () => ({ checked: false, active: null }),
+    },
+    { thresholds: { minFollowers: 3000, minMedianLikes: 30, minMedianComments: 3, minMedianViews: 1000 }, ai: { enabled: false } },
+  );
+  assert.equal(result.decision, 'weak');
+  assert.equal(result.instagram, 'https://www.instagram.com/esimerkki/');
+  assert.equal(result.followers, 40);
 });
 
 test('evaluateCompany skips a sole trader', async () => {

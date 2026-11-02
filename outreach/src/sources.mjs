@@ -49,13 +49,14 @@ export async function lookupCompany(businessId) {
 
 export async function fetchSite(website) {
   const start = normalizeWebsite(website);
-  if (!start) return { ok: false, instagram: '', email: '' };
+  if (!start) return { ok: false, instagram: '', email: '', pageText: '' };
   const pages = [start, ...CONTACT_PATHS.map((path) => new URL(path, start).href)];
   let sawOk = false;
   let instagram = '';
+  let pageText = '';
   const emails = [];
   for (const page of pages) {
-    if (instagram && emails.length > 0) break;
+    if (instagram && emails.length > 0 && pageText) break;
     let response;
     try {
       response = await fetchText(page);
@@ -64,6 +65,7 @@ export async function fetchSite(website) {
     }
     if (!response.ok) continue;
     sawOk = true;
+    if (!pageText) pageText = stripTags(response.text).slice(0, 4000);
     if (!instagram) instagram = findInstagram(response.text);
     emails.push(...findEmails(response.text));
   }
@@ -71,6 +73,7 @@ export async function fetchSite(website) {
     ok: sawOk,
     instagram,
     email: pickEmail(emails, start),
+    pageText,
   };
 }
 
@@ -242,4 +245,13 @@ function decodeBasicEntities(value) {
     .replaceAll('&amp;', '&')
     .replaceAll('&#64;', '@')
     .replaceAll('&commat;', '@');
+}
+
+function stripTags(html) {
+  return String(html)
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
 }

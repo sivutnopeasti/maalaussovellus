@@ -1,6 +1,8 @@
 import { mkdir, readFile, writeFile, appendFile } from 'node:fs/promises';
 import path from 'node:path';
+import { aiConfig, polishOutreachMessage, suggestInstagramHandles } from './ai.mjs';
 import { parseCsv, rowFromRecord, toCsv } from './csv.mjs';
+import { findAtHandles, handleCandidatesFromName, profileMatchesCompany } from './handles.mjs';
 import { assessPresence, usernameFromInstagram } from './score.mjs';
 import { fetchAds, fetchInstagram, fetchSite, lookupCompany, normalizeWebsite, pickEmail } from './sources.mjs';
 import { buildMessage } from './template.mjs';
@@ -50,29 +52,40 @@ export async function evaluateCompany(input, deps, options) {
   }
 
   result.website = normalizeWebsite(result.website);
-  let site = { ok: false, instagram: '', email: '' };
+  let site = { ok: false, instagram: '', email: '', pageText: '' };
   if (result.website) {
     try {
       site = await deps.fetchSite(result.website);
     } catch (error) {
-      site = { ok: false, instagram: '', email: '', error: error.message };
+      site = { ok: false, instagram: '', email: '', pageText: '', error: error.message };
     }
   }
   if (!result.instagram && site.instagram) result.instagram = site.instagram;
   if (!result.email && site.email) result.email = site.email;
 
-  const instagramUsername = usernameFromInstagram(result.instagram);
   let profile = null;
   let instagramError = '';
+  let instagramUsername = usernameFromInstagram(result.instagram);
+
   if (instagramUsername) {
-    try {
-      profile = await deps.fetchInstagram(instagramUsername);
-      if (profile?.username) result.instagram = `https://www.instagram.com/${profile.username}/`;
-      if (!result.email && profile?.businessEmail) {
+    ({ profile, instagramError } = await loadProfile(deps, instagramUsername, result));
+  } else {
+    const discovered = await discoverInstagram({
+      deps,
+      options,
+      companyName: officialName,
+      website: result.website,
+      pageText: site.pageText || '',
+    });
+    if (discovered.profile) {
+      profile = discovered.profile;
+      instagramUsername = discovered.username;
+      result.instagram = `https://www.instagram.com/${discovered.username}/`;
+      if (!result.email && profile.businessEmail) {
         result.email = pickEmail([profile.businessEmail], result.website || profile.externalUrl || '');
       }
-    } catch (error) {
-      instagramError = error.message;
+    } else if (discovered.error) {
+      instagramError = discovered.error;
     }
   }
 
@@ -109,13 +122,14 @@ export async function processFile({ csvPath, outDir, options, deps, deliver }) {
   await mkdir(outDir, { recursive: true });
   const limited = rows.slice(0, options.limit || rows.length);
   const results = [];
+  const ai = options.ai || { enabled: false };
 
   for (let index = 0; index < limited.length; index += 1) {
     const input = limited[index];
     const result = await evaluateCompany(input, deps, options);
     result.delivery = 'ei lähetetä';
     if (result.decision === 'weak') {
-      const message = buildMessage({
+      let message = buildMessage({
         companyName: result.name,
         businessId: result.businessId,
         instagramUrl: result.instagram,
@@ -124,6 +138,13 @@ export async function processFile({ csvPath, outDir, options, deps, deliver }) {
         fromEmail: options.fromEmail,
         postalAddress: options.postalAddress,
       });
+      if (ai.enabled && deps.polishMessage) {
+        try {
+          message = await deps.polishMessage(message, { companyName: result.name });
+        } catch (error) {
+          result.reasons = [...result.reasons, `AI-viesti ohitettiin: ${error.message}`];
+        }
+      }
       const previewName = `${safeName(result.businessId || result.name)}.txt`;
       await writeFile(path.join(outDir, previewName), `${message.subject}\n\n${message.text}\n`, 'utf8');
       result.delivery = await maybeSend({ result, message, options, suppression, sent, deliver });
@@ -137,6 +158,50 @@ export async function processFile({ csvPath, outDir, options, deps, deliver }) {
 
   await writeFile(path.join(outDir, 'tulokset.csv'), toCsv(results), 'utf8');
   return results;
+}
+
+async function loadProfile(deps, username, result) {
+  try {
+    const profile = await deps.fetchInstagram(username);
+    if (profile?.username) result.instagram = `https://www.instagram.com/${profile.username}/`;
+    if (!result.email && profile?.businessEmail) {
+      result.email = pickEmail([profile.businessEmail], result.website || profile.externalUrl || '');
+    }
+    return { profile, instagramError: '' };
+  } catch (error) {
+    return { profile: null, instagramError: error.message };
+  }
+}
+
+async function discoverInstagram({ deps, options, companyName, website, pageText }) {
+  const candidates = [
+    ...findAtHandles(pageText),
+    ...handleCandidatesFromName(companyName),
+  ];
+  if (options.ai?.enabled && deps.suggestHandles) {
+    try {
+      const suggested = await deps.suggestHandles({ companyName, website, pageText });
+      candidates.push(...suggested);
+    } catch (error) {
+      return { profile: null, username: '', error: `AI-kahvaehdotus epäonnistui: ${error.message}` };
+    }
+  }
+
+  const tried = new Set();
+  for (const raw of candidates) {
+    const username = usernameFromInstagram(raw);
+    if (!username || tried.has(username)) continue;
+    tried.add(username);
+    try {
+      const profile = await deps.fetchInstagram(username);
+      if (profileMatchesCompany(profile, { name: companyName, website })) {
+        return { profile, username: profile.username || username, error: '' };
+      }
+    } catch {
+      /* try next candidate */
+    }
+  }
+  return { profile: null, username: '', error: '' };
 }
 
 async function maybeSend({ result, message, options, suppression, sent, deliver }) {
@@ -161,9 +226,8 @@ async function maybeSend({ result, message, options, suppression, sent, deliver 
   return 'lähetetty';
 }
 
-function finish(result, options) {
+function finish(result) {
   result.reasons = result.reasons || [];
-  if (result.decision === 'weak' && options) return result;
   return result;
 }
 
@@ -209,10 +273,13 @@ function safeName(value) {
 }
 
 export function defaultDeps(env = process.env) {
+  const ai = aiConfig(env);
   return {
     lookupCompany,
     fetchSite,
     fetchInstagram,
     fetchAds: (name) => fetchAds(name, env.META_ACCESS_TOKEN || ''),
+    suggestHandles: (payload) => suggestInstagramHandles(payload, ai),
+    polishMessage: (message, context) => polishOutreachMessage(message, context, ai),
   };
 }
