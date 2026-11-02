@@ -3,12 +3,18 @@
   "private": true,
   "version": "1.0.0",
   "type": "module",
-  "description": "Etsii heikon Instagram-näkyvyyden yrityksiä ja lähettää niille kutsun hakea sisällöntuottajaa UGC Suomesta.",
+  "description": "Mailchimp-tyylinen nettisovellus: heikon Instagramin yritykset ja UGC-kutsuviestit.",
   "scripts": {
-    "start": "node src/cli.mjs",
+    "dev": "next dev -p 3100",
+    "build": "next build",
+    "start": "next start -p 3100",
+    "cli": "node src/cli.mjs",
     "test": "node --test test/*.test.mjs"
   },
   "dependencies": {
-    "nodemailer": "^7.0.10"
+    "next": "^15.5.4",
+    "nodemailer": "^7.0.10",
+    "react": "^19.1.1",
+    "react-dom": "^19.1.1"
   }
 }
