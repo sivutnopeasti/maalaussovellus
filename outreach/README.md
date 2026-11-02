@@ -27,14 +27,17 @@ npm run dev
 
 Avaa http://localhost:3100
 
-## Deploy Verceliin
+## Deploy Verceliin (maalaussovellus-repo)
 
-1. Forkkaa / pushaa tämä repo GitHubiin
-2. [vercel.com](https://vercel.com) → Add New Project → valitse repo
-3. Lisää **Upstash Redis** (Vercel Marketplace, ilmainen) → Environment Variables:
+Sovellus elää kansiossa `outreach/` haarassa `cursor/ugc-email-outreach-900b`.
+
+1. [vercel.com](https://vercel.com) → **Add New Project** → valitse `sivutnopeasti/maalaussovellus`
+2. **Root Directory** → `outreach` (Important: muuten Vercel yrittää rakentaa maalaussovelluksen)
+3. Production Branch (tai Preview): `cursor/ugc-email-outreach-900b` — tai mergeaa `master`iin ja deployaa sieltä
+4. Lisää **Upstash Redis** (Vercel Marketplace, ilmainen) → Environment Variables:
    - `UPSTASH_REDIS_REST_URL`
    - `UPSTASH_REDIS_REST_TOKEN`
-4. Deploy
+5. Deploy
 
 Ilman Redistä Vercelissä data ei säily funktioiden välillä. Paikallisesti käytetään `data/`-kansiota.
 
