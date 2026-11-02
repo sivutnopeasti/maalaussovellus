@@ -1,0 +1,14 @@
+{
+  "name": "ugc-outreach",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Etsii heikon Instagram-näkyvyyden yrityksiä ja lähettää niille kutsun hakea sisällöntuottajaa UGC Suomesta.",
+  "scripts": {
+    "start": "node src/cli.mjs",
+    "test": "node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "nodemailer": "^7.0.10"
+  }
+}
