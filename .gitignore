@@ -2,6 +2,12 @@ node_modules/
 .env
 .env.local
 .env*.local
+outreach/out/
+outreach/data/
+outreach/.env
+outreach/.env.local
+supabase/.branches/
+supabase/.temp/
 dist/
 .next/
 out/
